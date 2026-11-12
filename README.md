@@ -3,7 +3,13 @@
 A free, private video editor that runs entirely in your browser.
 There's no install, no account, no watermark and no subscription, and your files never leave your device.
 
-## Run it
+## ▶ Use it now
+
+**https://lghost067.github.io/ghosts/**
+
+It works on desktop and phone. Chrome or Edge give the best results, including MP4 export.
+
+## Run it yourself
 
 Option A: open `index.html` in Chrome, Edge or Firefox.
 
@@ -14,7 +20,15 @@ python3 -m http.server 8000
 # then open http://localhost:8000
 ```
 
-Want a public link? Turn on **GitHub Pages** for this repo (Settings → Pages → deploy from branch, root folder). It's just three static files.
+### Hosting on GitHub Pages
+
+The live link above comes from GitHub Pages. To set it up on your own copy:
+
+1. The repo must be **public**, because free GitHub accounts can't use Pages on private repos. Use Settings → General → Change visibility.
+2. Go to Settings → Pages → **Deploy from a branch**, pick the branch, choose `/ (root)`, then Save.
+3. Wait about a minute. Every push redeploys automatically, and you can watch progress in the **Actions** tab.
+
+If you still get a 404 right after a deploy, your browser is showing an old copy. Hard refresh with Ctrl+Shift+R, or open the link in a private window.
 
 ## What it does
 
@@ -22,7 +36,6 @@ Want a public link? Turn on **GitHub Pages** for this repo (Settings → Pages �
 - **Multi-track timeline**: a main track, overlay tracks (picture-in-picture, stickers, text) and audio tracks
 - **Edit**: drag to move, drag the edges to trim, split ✂, duplicate, delete, with snapping
 - **Text**: 8 presets (caption, title, boxed, neon, subtitle, typewriter, meme…), fonts, outline, box, shadow and glow
-- **Text animations**: fade, pop, slide up, typewriter
 - **Auto captions** ✨: an AI (Whisper) listens to your clips and writes timed captions, entirely on your device
   - English, auto-detect or 20 other languages; Fast (41 MB) or Accurate (77 MB) model, downloaded once then cached
   - 1–6 words per caption, 4 styles, text case, and one click to restyle or delete them all
@@ -69,6 +82,6 @@ Want a public link? Turn on **GitHub Pages** for this repo (Settings → Pages �
 - Filters need a browser with canvas filter support (Chrome, Edge, Firefox).
 - Projects aren't saved when you close the tab, so export before you leave.
 - Auto captions need internet the first time, to download the AI library and model. After that your browser caches them.
-- Auto captions don't work in the claude.ai-hosted copy (`dist/ghostcut.html`), because that sandbox blocks the model download. Use the GitHub Pages version.
+- `dist/ghostcut.html` is an older single-file snapshot made for claude.ai hosting. It has no auto captions, keyframes, animations or multi-select, so use the GitHub Pages version.
 
 Built with plain HTML, CSS and JavaScript: canvas for compositing, Web Audio for mixing, and MediaRecorder for export. There are zero dependencies.
