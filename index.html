@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GhostCut — free video editor</title>
+  <meta name="description" content="A free, private, in-browser video editor. No uploads, no watermark, no subscription.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👻</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo">👻</span> GhostCut</div>
+    <div class="top-actions">
+      <button id="undoBtn" class="icon-btn" title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
+      <button id="redoBtn" class="icon-btn" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">↷</button>
+      <label class="field-inline" title="Aspect ratio">
+        <span>Ratio</span>
+        <select id="aspectSel">
+          <option value="9:16">9:16 · TikTok/Reels</option>
+          <option value="16:9">16:9 · YouTube</option>
+          <option value="1:1">1:1 · Square</option>
+          <option value="4:5">4:5 · Feed</option>
+          <option value="3:4">3:4</option>
+        </select>
+      </label>
+      <label class="field-inline" title="Export resolution">
+        <span>Quality</span>
+        <select id="resSel">
+          <option value="720">720p</option>
+          <option value="1080">1080p</option>
+        </select>
+      </label>
+      <label class="field-inline" title="Background color">
+        <span>BG</span>
+        <input type="color" id="bgColor" value="#000000">
+      </label>
+      <button id="exportBtn" class="primary">⬇ Export</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="panel left">
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-tab="media">🎞 Media</button>
+        <button class="tab" data-tab="text">🔤 Text</button>
+        <button class="tab" data-tab="stickers">✨ Stickers</button>
+      </nav>
+
+      <div class="tab-body" data-body="media">
+        <label class="dropzone" id="dropzone">
+          <input type="file" id="fileInput" accept="video/*,image/*,audio/*" multiple hidden>
+          <div class="dz-icon">＋</div>
+          <div><b>Import media</b></div>
+          <div class="muted">Video, photos, music — or drop files anywhere</div>
+        </label>
+        <div class="media-grid" id="mediaGrid"></div>
+        <p class="muted small privacy">🔒 Files never leave your device. Everything runs in your browser.</p>
+      </div>
+
+      <div class="tab-body hidden" data-body="text">
+        <div class="preset-grid" id="textPresets"></div>
+      </div>
+
+      <div class="tab-body hidden" data-body="stickers">
+        <div class="sticker-grid" id="stickerGrid"></div>
+      </div>
+    </aside>
+
+    <section class="preview">
+      <div class="stage-wrap" id="stageWrap">
+        <canvas id="stage"></canvas>
+      </div>
+      <div class="transport">
+        <span class="timecode" id="timecode">00:00.00 / 00:00.00</span>
+        <div class="transport-btns">
+          <button class="icon-btn" id="toStartBtn" title="Go to start (Home)" aria-label="Go to start">⏮</button>
+          <button class="icon-btn play" id="playBtn" title="Play / Pause (Space)" aria-label="Play">▶</button>
+          <button class="icon-btn" id="toEndBtn" title="Go to end (End)" aria-label="Go to end">⏭</button>
+        </div>
+        <span class="spacer"></span>
+      </div>
+    </section>
+
+    <aside class="panel right" id="inspector"></aside>
+  </main>
+
+  <section class="timeline">
+    <div class="tl-toolbar">
+      <button id="splitBtn" title="Split at playhead (S)">✂ Split</button>
+      <button id="dupBtn" title="Duplicate (D)">⧉ Duplicate</button>
+      <button id="delBtn" title="Delete (Del)">🗑 Delete</button>
+      <span class="sep"></span>
+      <button id="addVTrackBtn" title="Add overlay track">＋ Video track</button>
+      <button id="addATrackBtn" title="Add audio track">＋ Audio track</button>
+      <span class="spacer"></span>
+      <label class="field-inline"><input type="checkbox" id="snapChk" checked> Snap</label>
+      <label class="field-inline zoom">🔍 <input type="range" id="zoomRange" min="10" max="400" value="80"></label>
+    </div>
+    <div class="tl-scroll" id="tlScroll">
+      <div class="tl-content" id="tlContent">
+        <div class="ruler-row">
+          <div class="track-head ruler-head"></div>
+          <div class="ruler" id="ruler"></div>
+        </div>
+        <div id="tracks"></div>
+        <div class="playhead" id="playhead"><div class="knob"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="modal hidden" id="exportModal">
+    <div class="modal-card">
+      <h2>Exporting your masterpiece 🎬</h2>
+      <p class="muted" id="exportInfo"></p>
+      <div class="progress"><div class="bar" id="exportBar"></div></div>
+      <p class="small" id="exportPct">0%</p>
+      <p class="muted small">Keep this tab open &amp; visible — export renders in real time.</p>
+      <button id="cancelExportBtn">Cancel</button>
+    </div>
+  </div>
+
+  <div class="toast-wrap" id="toasts"></div>
+  <div id="mediaHolder" aria-hidden="true"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
