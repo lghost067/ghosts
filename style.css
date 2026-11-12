@@ -177,6 +177,15 @@ input[type="range"] { accent-color: var(--accent); width: 100%; }
 .ctl > label { color: var(--muted); font-size: 12px; }
 .ctl .val { font-size: 11px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
 .ctl.wide { grid-template-columns: 78px 1fr; }
+.ctl.has-kf { grid-template-columns: 78px 1fr 44px 24px; }
+.kf-dia {
+  width: 24px; height: 24px; padding: 0; border-radius: 6px; font-size: 12px; line-height: 1;
+  background: transparent; border-color: var(--line); color: var(--muted);
+}
+.kf-dia.anim { color: var(--accent-2); border-color: #22d3ee66; }
+.kf-dia.on { background: var(--accent-2); border-color: var(--accent-2); color: #0d0d12; }
+.kf-main { font-weight: 700; }
+.kf-main.on { background: var(--accent-2); border-color: var(--accent-2); color: #0d0d12; }
 .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .row button { flex: 1; font-size: 12px; padding: 5px 6px; }
 .chips { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
@@ -198,7 +207,8 @@ kbd { background: var(--panel-2); border: 1px solid var(--line); border-bottom-w
 .tl-toolbar button { font-size: 12px; padding: 4px 9px; }
 .tl-toolbar .sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }
 .tl-toolbar .zoom input { width: 120px; }
-.tl-scroll { flex: 1; overflow: auto; position: relative; min-height: 0; touch-action: pan-y; }
+.tl-scroll { flex: 1; overflow: auto; position: relative; min-height: 0; touch-action: pan-x pan-y; }
+.ruler { touch-action: none; }
 .tl-content { position: relative; min-width: 100%; padding-bottom: 12px; }
 .ruler-row, .track-row { display: flex; }
 .ruler-row { position: sticky; top: 0; z-index: 6; height: 26px; background: var(--panel); border-bottom: 1px solid var(--line); }
@@ -263,6 +273,17 @@ kbd { background: var(--panel-2); border: 1px solid var(--line); border-bottom-w
 .clip:not(.selected) .h { background: transparent; }
 .clip:not(.selected) .h::after { opacity: 0; }
 .clip:hover .h::after { opacity: 1; }
+
+.clip .kfm {
+  position: absolute; bottom: 3px; width: 9px; height: 9px; margin-left: -4.5px;
+  background: #fff; border: 1.5px solid #1e1e29; transform: rotate(45deg);
+  pointer-events: none; z-index: 2;
+}
+.clip .anim-badge { background: #000a; border-radius: 4px; padding: 0 4px; margin-right: 4px; font-weight: 700; }
+.marquee {
+  position: absolute; z-index: 8; pointer-events: none;
+  border: 1px solid var(--accent-2); background: #22d3ee1f; border-radius: 3px;
+}
 
 .playhead {
   position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px;

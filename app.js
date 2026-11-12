@@ -74,16 +74,30 @@
   const TEXT_PRESETS = [
     { name: 'Basic',     t: { text: 'Your text', color: '#ffffff' } },
     { name: 'Caption',   t: { text: 'when the code works first try', color: '#ffffff', stroke: '#000000', strokeW: 10, bold: true, size: 72, y: 0.72 } },
-    { name: 'Title',     t: { text: 'BIG TITLE', font: FONTS[1][0], size: 150, color: '#ffffff', shadow: true, anim: 'pop' } },
-    { name: 'Boxed',     t: { text: 'Boxed', color: '#111111', bg: '#ffd43b', bold: true, anim: 'slide' } },
-    { name: 'Neon',      t: { text: 'neon vibes', color: '#22d3ee', glow: true, bold: true, size: 110, anim: 'fade' } },
+    { name: 'Title',     t: { text: 'BIG TITLE', font: FONTS[1][0], size: 150, color: '#ffffff', shadow: true, animIn: 'pop' } },
+    { name: 'Boxed',     t: { text: 'Boxed', color: '#111111', bg: '#ffd43b', bold: true, animIn: 'slide-up' } },
+    { name: 'Neon',      t: { text: 'neon vibes', color: '#22d3ee', glow: true, bold: true, size: 110, animIn: 'fade', animLoop: 'pulse' } },
     { name: 'Subtitle',  t: { text: 'subtitle goes here', color: '#ffffff', bg: '#000000aa', size: 52, y: 0.86 } },
-    { name: 'Typewriter',t: { text: 'typing...', font: FONTS[3][0], color: '#a3e635', size: 80, anim: 'typewriter' } },
+    { name: 'Typewriter',t: { text: 'typing...', font: FONTS[3][0], color: '#a3e635', size: 80, animIn: 'typewriter', animInDur: 1 } },
     { name: 'Meme',      t: { text: 'TOP TEXT', font: FONTS[1][0], color: '#ffffff', stroke: '#000000', strokeW: 14, size: 120, y: 0.12 } },
   ];
   const STICKERS = '😂 💀 🔥 ✨ 👻 😭 🤯 😎 🥹 ❤️ 💯 👀 🎉 🙏 😤 🫡 🤡 💅 🗿 ⭐ ⚡ 🌈 🎵 📸 🍕 🐐 👑 💸 🚀 ✅ ❌ ⬆️ ➡️ 💬 ❓ ‼️'.split(' ');
 
-  const ANIMS = [['none', 'None'], ['fade', 'Fade in'], ['pop', 'Pop'], ['slide', 'Slide up'], ['typewriter', 'Typewriter']];
+  // Animation presets. In/Out play at the clip's edges; Loop runs for the whole clip.
+  const ANIM_MOVES = [
+    ['none', 'None'], ['fade', 'Fade'], ['pop', 'Pop'], ['zoom-in', 'Zoom in'], ['zoom-out', 'Zoom out'],
+    ['slide-left', 'Slide left'], ['slide-right', 'Slide right'], ['slide-up', 'Slide up'], ['slide-down', 'Slide down'],
+    ['spin', 'Spin'],
+  ];
+  const ANIM_TEXT_ONLY = [['typewriter', 'Typewriter']];
+  const ANIM_LOOPS = [
+    ['none', 'None'], ['kenburns', 'Slow zoom (Ken Burns)'], ['pulse', 'Pulse'], ['float', 'Float'],
+    ['sway', 'Sway'], ['shake', 'Shake'], ['rotate', 'Rotate'],
+  ];
+  // Keyframes: these properties can be animated over time.
+  const KF_PROPS = ['x', 'y', 'scale', 'rotation', 'opacity'];
+  const KF_EASES = [['smooth', 'Smooth'], ['linear', 'Linear'], ['in', 'Ease in'], ['out', 'Ease out'], ['hold', 'Hold (jump)']];
+  const FRAME = 1 / 30;
 
   // ------------------------------------------------------------------
   // state
@@ -96,9 +110,12 @@
       tracks: [newTrack('visual'), newTrack('visual'), newTrack('audio')],
     },
     media: new Map(),     // id -> media record (not serialised)
-    selectedId: null,
+    selectedId: null,     // the "primary" selected clip (drives the inspector)
+    selectedIds: new Set(),
+    multiMode: false,     // tap-to-add selection (for phones, where there's no Shift key)
     time: 0,
     playing: false,
+    stopAt: null,         // when previewing an animation, pause here
     pps: 80,              // timeline pixels per second
     snap: true,
     exporting: null,
@@ -114,6 +131,8 @@
     return null;
   };
   const selected = () => (state.selectedId ? findClip(state.selectedId) : null);
+  const selectedAll = () => [...state.selectedIds].map(findClip).filter(Boolean);
+  const isVisual = (c) => c.type !== 'audio';
   const clipEnd = (c) => c.start + c.duration;
   const projectDuration = () => allClips().reduce((m, c) => Math.max(m, clipEnd(c)), 0);
   const mainTrack = () => { const v = tracks().filter(t => t.kind === 'visual'); return v[v.length - 1]; };
@@ -168,7 +187,8 @@
   function restore(i) {
     history.idx = i;
     state.project = JSON.parse(history.stack[i]);
-    if (state.selectedId && !findClip(state.selectedId)) state.selectedId = null;
+    state.selectedIds = new Set([...state.selectedIds].filter(id => findClip(id)));
+    if (state.selectedId && !findClip(state.selectedId)) state.selectedId = [...state.selectedIds].pop() || null;
     for (const c of allClips()) { const m = state.media.get(c.mediaId); if (m) m.removed = false; }
     renderMediaGrid();
     syncTopbar();
@@ -282,7 +302,7 @@
     for (const tr of tracks()) tr.clips = tr.clips.filter(c => c.mediaId !== id);
     const m = state.media.get(id);
     if (m) m.removed = true;
-    if (state.selectedId && !findClip(state.selectedId)) select(null);
+    setSelection([...state.selectedIds], state.selectedId);   // drops clips that no longer exist
     renderMediaGrid();
     commit();
     toast(used ? `Removed file + ${used} clip${used > 1 ? 's' : ''} · Ctrl+Z to undo` : 'Removed file · Ctrl+Z to undo');
@@ -295,6 +315,9 @@
     id: uid(), start: 0, duration: 3, in: 0, speed: 1, volume: 1, fadeIn: 0, fadeOut: 0,
     x: 0.5, y: 0.5, scale: 1, rotation: 0, opacity: 1,
     filters: { ...NO_FILTER }, preset: 'none',
+    animIn: 'none', animInDur: 0.5, animOut: 'none', animOutDur: 0.5, animLoop: 'none',
+    kf: {},               // prop -> [{t (seconds from clip start), v}], sorted by t
+    kfEase: 'smooth',
   });
 
   function clipFromMedia(m) {
@@ -309,7 +332,7 @@
     Object.assign(c, {
       type: 'text', text: 'Your text', font: FONTS[0][0], size: 90, color: '#ffffff',
       stroke: '#000000', strokeW: 0, bg: '', bold: true, italic: false, align: 'center',
-      shadow: false, glow: false, anim: 'none',
+      shadow: false, glow: false,
     }, opts);
     return c;
   }
@@ -364,13 +387,20 @@
   // ------------------------------------------------------------------
   // editing ops
   // ------------------------------------------------------------------
+  const canSplit = (c, t) => t - c.start > MIN_DUR / 2 && clipEnd(c) - t > MIN_DUR / 2;
+
   function splitAt(t) {
-    const sel = selected();
-    let targets = [];
-    if (sel && isActive(sel.clip, t) && t - sel.clip.start > MIN_DUR / 2 && clipEnd(sel.clip) - t > MIN_DUR / 2) targets = [sel];
-    else if (!sel) for (const tr of tracks()) for (const c of tr.clips) if (t - c.start > MIN_DUR / 2 && clipEnd(c) - t > MIN_DUR / 2) targets.push({ clip: c, track: tr });
-    if (!targets.length) { toast('Move the playhead over a clip to split it'); return; }
-    let last = null;
+    // selection set → split the selected clips under the playhead; nothing selected → split everything there
+    let targets;
+    if (state.selectedIds.size) {
+      targets = selectedAll().filter(({ clip }) => canSplit(clip, t));
+      if (!targets.length) { toast('Move the playhead over a selected clip to split it'); return; }
+    } else {
+      targets = [];
+      for (const tr of tracks()) for (const c of tr.clips) if (canSplit(c, t)) targets.push({ clip: c, track: tr });
+      if (!targets.length) { toast('Move the playhead over a clip to split it'); return; }
+    }
+    const newIds = [];
     for (const { clip: c, track } of targets) {
       const left = t - c.start;
       const b = JSON.parse(JSON.stringify(c));
@@ -379,38 +409,57 @@
       b.duration = c.duration - left;
       b.in = c.in + left * c.speed;
       b.fadeIn = 0;
+      b.animIn = 'none';          // the In animation stays on the first half…
       c.duration = left;
       c.fadeOut = 0;
-      if (b.type === 'text') b.anim = 'none';
+      c.animOut = 'none';         // …and the Out animation moves to the second half
+      // keep motion continuous: both halves get a keyframe at the cut with the value there
+      for (const p of KF_PROPS) {
+        const keys = (c.kf && c.kf[p]) || [];
+        if (!keys.length) continue;
+        const v = kfValue(keys, left, c.kfEase);
+        c.kf[p] = keys.filter(k => k.t < left - 1e-6).concat({ t: left, v });
+        b.kf[p] = [{ t: 0, v }].concat(keys.filter(k => k.t > left + 1e-6).map(k => ({ t: k.t - left, v: k.v })));
+      }
       track.clips.push(b);
-      last = b;
+      newIds.push(b.id);
     }
-    if (sel && last) state.selectedId = last.id;
+    if (state.selectedIds.size) setSelection(newIds, newIds[newIds.length - 1]);
     commit();
     renderInspector();
   }
 
   function deleteSelected() {
-    const sel = selected();
-    if (!sel) return;
-    sel.track.clips = sel.track.clips.filter(c => c.id !== sel.clip.id);
+    const ids = new Set(state.selectedIds);
+    if (!ids.size) return;
+    for (const tr of tracks()) tr.clips = tr.clips.filter(c => !ids.has(c.id));
     select(null);
     commit();
+    if (ids.size > 1) toast(`Deleted ${ids.size} clips · Ctrl+Z to undo`);
   }
 
   function duplicateSelected() {
-    const sel = selected();
-    if (!sel) return;
-    const c = JSON.parse(JSON.stringify(sel.clip));
-    c.id = uid();
-    c.start = clipEnd(sel.clip);
-    if (!fits(sel.track, c.start, c.duration)) placeClip(c, 'keep'); else sel.track.clips.push(c);
-    select(c.id);
+    const sel = selectedAll();
+    if (!sel.length) return;
+    // copy the whole group, keeping the clips' timing relative to each other, right after the group
+    const groupStart = Math.min(...sel.map(s => s.clip.start));
+    const offset = Math.max(...sel.map(s => clipEnd(s.clip))) - groupStart;
+    const copies = sel.map(({ clip, track }) => {
+      const c = JSON.parse(JSON.stringify(clip));
+      c.id = uid();
+      c.start = clip.start + offset;
+      return { c, track };
+    });
+    for (const { c, track } of copies) {
+      if (fits(track, c.start, c.duration)) track.clips.push(c); else placeClip(c, 'keep');
+    }
+    setSelection(copies.map(x => x.c.id), copies[copies.length - 1].c.id);
     commit();
   }
 
   function setSpeed(c, track, speed) {
     const srcLen = c.duration * c.speed;
+    const oldDur = c.duration, oldSpeed = c.speed;
     let dur = srcLen / speed;
     const next = track.clips.filter(x => x.id !== c.id && x.start >= c.start + EPS).sort((a, b) => a.start - b.start)[0];
     if (next) dur = Math.min(dur, next.start - c.start);
@@ -418,6 +467,155 @@
     c.duration = Math.max(MIN_DUR, Math.min(dur, srcLimit({ ...c, duration: 0 })));
     c.fadeIn = Math.min(c.fadeIn, c.duration / 2);
     c.fadeOut = Math.min(c.fadeOut, c.duration / 2);
+    // keyframes are pinned to moments in the footage, so they stretch/squash with the speed
+    if (oldDur > 0) for (const p of KF_PROPS) if (c.kf && c.kf[p]) c.kf[p] = c.kf[p].map(k => ({ t: (k.t * oldSpeed) / speed, v: k.v }));
+  }
+
+  // ------------------------------------------------------------------
+  // keyframes
+  // ------------------------------------------------------------------
+  function easeKf(f, ease) {
+    switch (ease) {
+      case 'linear': return f;
+      case 'in': return f * f * f;
+      case 'out': return 1 - Math.pow(1 - f, 3);
+      case 'hold': return f >= 1 ? 1 : 0;
+      default: return f < 0.5 ? 4 * f * f * f : 1 - Math.pow(-2 * f + 2, 3) / 2;   // smooth (ease in-out)
+    }
+  }
+  /** Value of a sorted key list at local time lt. */
+  function kfValue(keys, lt, ease) {
+    if (lt <= keys[0].t) return keys[0].v;
+    const last = keys[keys.length - 1];
+    if (lt >= last.t) return last.v;
+    for (let i = 0; i < keys.length - 1; i++) {
+      const a = keys[i], b = keys[i + 1];
+      if (lt >= a.t && lt < b.t) {
+        const f = b.t > a.t ? (lt - a.t) / (b.t - a.t) : 1;
+        return a.v + (b.v - a.v) * easeKf(f, ease);
+      }
+    }
+    return last.v;
+  }
+  const hasKf = (c, p) => !!(c.kf && c.kf[p] && c.kf[p].length);
+  const hasAnyKf = (c) => KF_PROPS.some(p => hasKf(c, p));
+  /** Property value at timeline time t, following keyframes when there are any. */
+  const valAt = (c, p, t = state.time) => (hasKf(c, p) ? kfValue(c.kf[p], t - c.start, c.kfEase) : c[p]);
+  const playheadIn = (c) => state.time >= c.start - EPS && state.time <= clipEnd(c) + EPS;
+  const localNow = (c) => clamp(state.time - c.start, 0, c.duration);
+  const keyIndexAt = (c, p, lt) => (c.kf && c.kf[p] ? c.kf[p].findIndex(k => Math.abs(k.t - lt) < FRAME / 2) : -1);
+
+  function upsertKey(c, p, lt, v) {
+    if (!c.kf) c.kf = {};
+    const keys = c.kf[p] || (c.kf[p] = []);
+    const i = keyIndexAt(c, p, lt);
+    if (i >= 0) keys[i].v = v;
+    else { keys.push({ t: lt, v }); keys.sort((a, b) => a.t - b.t); }
+  }
+  function removeKey(c, p, i) {
+    const keys = c.kf[p];
+    const [gone] = keys.splice(i, 1);
+    if (!keys.length) { delete c.kf[p]; c[p] = gone.v; }   // last key gone: stay where it was
+  }
+  /**
+   * Set a property "now". If it's animated, this edits/creates the keyframe at the playhead
+   * (like other editors: once a property has keyframes, changing it adds one).
+   */
+  function setProp(c, p, v) {
+    if (hasKf(c, p)) {
+      if (!playheadIn(c)) return false;
+      upsertKey(c, p, localNow(c), v);
+    } else c[p] = v;
+    return true;
+  }
+  /** ◆ button on one property: add a keyframe here, or remove the one that's here. */
+  function toggleKey(c, p) {
+    if (!playheadIn(c)) { toast('Move the playhead over this clip to add a keyframe'); return; }
+    const lt = localNow(c);
+    const i = keyIndexAt(c, p, lt);
+    if (i >= 0) removeKey(c, p, i);
+    else upsertKey(c, p, lt, valAt(c, p));
+    commit();
+    refreshInspectorValues();
+  }
+  const keyTimes = (c) => [...new Set(KF_PROPS.flatMap(p => (hasKf(c, p) ? c.kf[p].map(k => +k.t.toFixed(4)) : [])))].sort((a, b) => a - b);
+  const anyKeyHere = (c) => playheadIn(c) && KF_PROPS.some(p => keyIndexAt(c, p, localNow(c)) >= 0);
+  /** Big ◆ button: keyframe every property at the playhead, or remove all keys here. */
+  function toggleAllKeys(c) {
+    if (!playheadIn(c)) { toast('Move the playhead over this clip to add a keyframe'); return; }
+    const lt = localNow(c);
+    if (anyKeyHere(c)) {
+      for (const p of KF_PROPS) { const i = keyIndexAt(c, p, lt); if (i >= 0) removeKey(c, p, i); }
+    } else {
+      for (const p of KF_PROPS) upsertKey(c, p, lt, valAt(c, p));
+      if (keyTimes(c).length === 1) toast('Keyframe added ◆ Now move the playhead and change something to animate it', 4500);
+    }
+    commit();
+    renderInspector();
+  }
+  function jumpKey(c, dir) {
+    const lt = state.time - c.start;
+    const times = keyTimes(c).filter(t => t >= -EPS && t <= c.duration + EPS);
+    const target = dir < 0 ? times.filter(t => t < lt - FRAME / 2).pop() : times.find(t => t > lt + FRAME / 2);
+    if (target == null) { toast(dir < 0 ? 'No earlier keyframe' : 'No later keyframe'); return; }
+    seek(c.start + target);
+  }
+  function clearKeys(c) {
+    for (const p of KF_PROPS) if (hasKf(c, p)) c[p] = valAt(c, p);
+    c.kf = {};
+    commit();
+    renderInspector();
+  }
+
+  // ------------------------------------------------------------------
+  // In / Out / Loop animations
+  // ------------------------------------------------------------------
+  /** Extra motion from animation presets at local time lt: multiply alpha/scale, add offsets. */
+  function animFx(c, lt) {
+    const fx = { alpha: 1, scale: 1, dx: 0, dy: 0, rot: 0, chars: Infinity };
+    const D = c.duration;
+    const inDur = Math.min(c.animInDur || 0, D / 2), outDur = Math.min(c.animOutDur || 0, D / 2);
+    if (c.animIn && c.animIn !== 'none' && inDur > 0 && lt < inDur) applyMove(fx, c.animIn, clamp(lt / inDur, 0, 1), true);
+    if (c.animOut && c.animOut !== 'none' && outDur > 0 && lt > D - outDur) applyMove(fx, c.animOut, clamp((D - lt) / outDur, 0, 1), false);
+    const TAU = Math.PI * 2;
+    switch (c.animLoop) {
+      case 'kenburns': fx.scale *= 1 + 0.15 * clamp(lt / D, 0, 1); break;
+      case 'pulse': fx.scale *= 1 + 0.06 * Math.sin(TAU * 1.4 * lt); break;
+      case 'float': fx.dy += 0.015 * Math.sin(TAU * 0.6 * lt); break;
+      case 'sway': fx.rot += 5 * Math.sin(TAU * 0.5 * lt); break;
+      case 'shake':
+        fx.dx += 0.006 * (Math.sin(lt * 47) + Math.sin(lt * 29)) / 2;
+        fx.dy += 0.006 * (Math.sin(lt * 53) + Math.sin(lt * 31)) / 2;
+        break;
+      case 'rotate': fx.rot += 120 * lt; break;
+    }
+    return fx;
+  }
+  /** p = how "present" the clip is: 0 = fully gone, 1 = fully in place. */
+  function applyMove(fx, type, p, isIn) {
+    const k = 1 - easeOut(p);          // 0 at rest → 1 fully away (eases out when entering, in when leaving)
+    const dir = isIn ? 1 : -1;
+    switch (type) {
+      case 'fade': fx.alpha *= p; break;
+      case 'pop': fx.scale *= Math.max(0, 0.3 + 0.7 * easeBack(p)); fx.alpha *= Math.min(1, p * 2.5); break;
+      case 'zoom-in': fx.scale *= isIn ? 1 - 0.5 * k : 1 + 0.6 * k; fx.alpha *= Math.min(1, p * 2); break;
+      case 'zoom-out': fx.scale *= isIn ? 1 + 0.6 * k : 1 - 0.5 * k; fx.alpha *= Math.min(1, p * 2); break;
+      case 'slide-left': fx.dx += dir * 0.6 * k; fx.alpha *= Math.min(1, p * 2); break;
+      case 'slide-right': fx.dx -= dir * 0.6 * k; fx.alpha *= Math.min(1, p * 2); break;
+      case 'slide-up': fx.dy += dir * 0.4 * k; fx.alpha *= Math.min(1, p * 2); break;
+      case 'slide-down': fx.dy -= dir * 0.4 * k; fx.alpha *= Math.min(1, p * 2); break;
+      case 'spin': fx.rot += -dir * 180 * k; fx.scale *= 1 - 0.6 * k; fx.alpha *= p; break;
+      case 'typewriter': fx.chars = p; break;   // fraction of characters shown (text only)
+    }
+  }
+
+  /** Preview an animation: play just this stretch of the timeline, then stop. */
+  function previewRange(a, b) {
+    if (state.exporting) return;
+    pause();
+    seek(a);
+    play();
+    state.stopAt = b;
   }
 
   // ------------------------------------------------------------------
@@ -571,40 +769,27 @@
   }
 
   /** Box of a visual clip in canvas space, before rotation: centre + size (already scaled). */
-  function clipBox(c) {
-    const cx = c.x * canvas.width, cy = c.y * canvas.height;
+  function clipBox(c, t = state.time) {
+    const cx = valAt(c, 'x', t) * canvas.width, cy = valAt(c, 'y', t) * canvas.height;
+    const scale = valAt(c, 'scale', t), rot = valAt(c, 'rotation', t);
     if (c.type === 'text') {
       const L = textLayout(c);
-      return { cx, cy, w: (L.w + L.pad * 2) * c.scale, h: (L.h + L.pad * 1.2) * c.scale };
+      return { cx, cy, rot, w: (L.w + L.pad * 2) * scale, h: (L.h + L.pad * 1.2) * scale };
     }
     const m = state.media.get(c.mediaId);
     const w = (m && m.w) || 16, h = (m && m.h) || 9;
-    const s = containScale(w, h) * c.scale;
-    return { cx, cy, w: w * s, h: h * s };
+    const s = containScale(w, h) * scale;
+    return { cx, cy, rot, w: w * s, h: h * s };
   }
 
   const easeOut = (p) => 1 - Math.pow(1 - p, 3);
   const easeBack = (p) => { const k = 1.70158; return 1 + (k + 1) * Math.pow(p - 1, 3) + k * Math.pow(p - 1, 2); };
 
-  function drawText(c, local) {
+  /** charsFrac: fraction of characters to show (typewriter), Infinity = all. */
+  function drawText(c, charsFrac) {
     const L = textLayout(c);
-    const A = Math.min(0.5, c.duration / 3);
-    const p = A > 0 ? clamp(local / A, 0, 1) : 1;
-    let alpha = 1, sc = 1, dy = 0, chars = Infinity;
-    switch (c.anim) {
-      case 'fade': alpha = p; break;
-      case 'pop': sc = 0.3 + 0.7 * easeBack(p); alpha = Math.min(1, p * 2.5); break;
-      case 'slide': dy = (1 - easeOut(p)) * canvas.height * 0.06; alpha = p; break;
-      case 'typewriter': {
-        const total = L.lines.join('').length;
-        const T = Math.min(1.5, c.duration * 0.6, total * 0.07);
-        chars = T > 0 ? Math.floor(total * clamp(local / T, 0, 1)) : total;
-        break;
-      }
-    }
-    ctx.globalAlpha *= alpha;
-    ctx.translate(0, dy);
-    ctx.scale(sc, sc);
+    const total = L.lines.join('').length;
+    const chars = charsFrac === Infinity ? Infinity : Math.floor(total * charsFrac);
     if (c.bg) {
       ctx.fillStyle = c.bg;
       const bw = L.w + L.pad * 2, bh = L.h + L.pad * 1.2;
@@ -640,19 +825,21 @@
   }
 
   function drawClip(c, t) {
-    const alpha = clamp(c.opacity * fadeFactor(c, t), 0, 1);
-    if (alpha <= 0) return;
+    const fx = animFx(c, t - c.start);
+    const alpha = clamp(valAt(c, 'opacity', t) * fadeFactor(c, t) * fx.alpha, 0, 1);
+    const scale = valAt(c, 'scale', t) * fx.scale;
+    if (alpha <= 0 || scale <= 0) return;
     ctx.save();
-    ctx.translate(c.x * canvas.width, c.y * canvas.height);
-    ctx.rotate((c.rotation * Math.PI) / 180);
+    ctx.translate((valAt(c, 'x', t) + fx.dx) * canvas.width, (valAt(c, 'y', t) + fx.dy) * canvas.height);
+    ctx.rotate(((valAt(c, 'rotation', t) + fx.rot) * Math.PI) / 180);
     ctx.globalAlpha = alpha;
     if (c.type === 'text') {
-      ctx.scale(c.scale, c.scale);
-      drawText(c, t - c.start);
+      ctx.scale(scale, scale);
+      drawText(c, fx.chars);
     } else {
       const s = sourceOf(c);
       if (s) {
-        const k = containScale(s.w, s.h) * c.scale;
+        const k = containScale(s.w, s.h) * scale;
         ctx.filter = filterStr(c.filters, shortSide() / 1080);
         ctx.drawImage(s.src, (-s.w * k) / 2, (-s.h * k) / 2, s.w * k, s.h * k);
       }
@@ -691,19 +878,26 @@
       ctx.stroke();
       ctx.restore();
     }
-    if (!sel || sel.clip.type === 'audio' || !isActive(sel.clip, t) || sel.track.hidden) return;
-    const c = sel.clip, b = clipBox(c);
-    ctx.save();
-    ctx.translate(b.cx, b.cy);
-    ctx.rotate((c.rotation * Math.PI) / 180);
-    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = lw;
-    ctx.shadowColor = '#000'; ctx.shadowBlur = lw * 2;
-    ctx.strokeRect(-b.w / 2, -b.h / 2, b.w, b.h);
-    const r = handleRadius();
-    ctx.fillStyle = '#8b5cf6';
-    ctx.beginPath(); ctx.arc(b.w / 2, b.h / 2, r, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = '#fff'; ctx.stroke();
-    ctx.restore();
+    const single = state.selectedIds.size === 1;
+    for (const { clip: c, track } of selectedAll()) {
+      if (!isVisual(c) || !isActive(c, t) || track.hidden) continue;
+      const b = clipBox(c, t);
+      ctx.save();
+      ctx.translate(b.cx, b.cy);
+      ctx.rotate((b.rot * Math.PI) / 180);
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = lw;
+      ctx.shadowColor = '#000'; ctx.shadowBlur = lw * 2;
+      if (!single) ctx.setLineDash([lw * 5, lw * 3]);
+      ctx.strokeRect(-b.w / 2, -b.h / 2, b.w, b.h);
+      if (single && sel && c === sel.clip) {      // resize handle only when one clip is selected
+        const r = handleRadius();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#8b5cf6';
+        ctx.beginPath(); ctx.arc(b.w / 2, b.h / 2, r, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.stroke();
+      }
+      ctx.restore();
+    }
   }
   const handleRadius = () => Math.max(10, shortSide() / 45);
 
@@ -725,6 +919,7 @@
     if (state.time >= dur - 0.02) state.time = 0;
     ensureAudio();
     state.playing = true;
+    state.stopAt = null;
     clock = { wall: performance.now(), t: state.time };
     $('#playBtn').textContent = '❚❚';
     syncMedia(state.time, true);
@@ -733,11 +928,13 @@
   function pause() {
     if (!state.playing) return;
     state.playing = false;
+    state.stopAt = null;
     cancelAnimationFrame(rafId);
     $('#playBtn').textContent = '▶';
     for (const e of els.values()) e.el.pause();
     syncMedia(state.time, false);
     requestRender();
+    refreshInspectorValues();
   }
   const togglePlay = () => (state.playing ? pause() : play());
 
@@ -745,6 +942,12 @@
     if (!state.playing) return;
     const dur = projectDuration();
     state.time = clock.t + (now - clock.wall) / 1000;
+    if (state.stopAt != null && !state.exporting && state.time >= state.stopAt) {
+      state.time = Math.min(state.stopAt, dur);
+      pause();
+      updatePlayhead();
+      return;
+    }
     if (state.time >= dur) {
       state.time = dur;
       render();
@@ -772,6 +975,7 @@
     const x = HEAD_W() + state.time * state.pps;
     $('#playhead').style.transform = `translateX(${x}px)`;
     $('#timecode').textContent = `${fmt(state.time)} / ${fmt(projectDuration())}`;
+    if (!state.playing) refreshInspectorValues();   // animated values + ◆ states follow the playhead
     if (follow) {
       const sc = $('#tlScroll');
       const vis = x - sc.scrollLeft;
@@ -961,7 +1165,7 @@
     const m = c.mediaId ? state.media.get(c.mediaId) : null;
     const left = c.start * state.pps, width = Math.max(4, c.duration * state.pps);
     const d = el('div', {
-      class: `clip type-${c.type}${c.id === state.selectedId ? ' selected' : ''}`,
+      class: `clip type-${c.type}${state.selectedIds.has(c.id) ? ' selected' : ''}`,
       'data-clip': c.id,
       style: `left:${left}px;width:${width}px`,
     });
@@ -976,6 +1180,12 @@
     d.append(lab);
     if (c.fadeIn > 0) d.append(el('div', { class: 'fade in', style: `width:${c.fadeIn * state.pps}px` }));
     if (c.fadeOut > 0) d.append(el('div', { class: 'fade out', style: `width:${c.fadeOut * state.pps}px` }));
+    for (const t of keyTimes(c)) {
+      if (t < -EPS || t > c.duration + EPS) continue;
+      d.append(el('div', { class: 'kfm', style: `left:${t * state.pps}px`, title: `Keyframe at ${fmt(c.start + t)}` }));
+    }
+    const badges = [c.animIn !== 'none' ? '↘' : '', c.animLoop !== 'none' ? '↻' : '', c.animOut !== 'none' ? '↗' : ''].join('');
+    if (badges) lab.prepend(el('span', { class: 'anim-badge', title: 'Has animations' }, badges));
     d.append(el('div', { class: 'h l', 'data-handle': 'l' }), el('div', { class: 'h r', 'data-handle': 'r' }));
     return d;
   }
@@ -1001,9 +1211,9 @@
     const r = tlScroll.getBoundingClientRect();
     return Math.max(0, (x - r.left + tlScroll.scrollLeft - HEAD_W()) / state.pps);
   };
-  function snapPoints(excludeId) {
+  function snapPoints(exclude = new Set()) {
     const pts = [0, state.time];
-    for (const c of allClips()) if (c.id !== excludeId) pts.push(c.start, clipEnd(c));
+    for (const c of allClips()) if (!exclude.has(c.id)) pts.push(c.start, clipEnd(c));
     return pts;
   }
   function snapTime(t, pts) {
@@ -1022,46 +1232,100 @@
   }
 
   let drag = null;
+  const fitsExcept = (track, start, dur, ids) =>
+    track.clips.every(x => ids.has(x.id) || x.start >= start + dur - EPS || clipEnd(x) <= start + EPS);
+  const shiftKeys = (kf, delta) => {
+    const out = {};
+    for (const [p, keys] of Object.entries(kf || {})) out[p] = keys.map(k => ({ t: k.t - delta, v: k.v }));
+    return out;
+  };
+
   tlScroll.addEventListener('pointerdown', (ev) => {
     if (ev.button !== 0 || state.exporting) return;
+    if (ev.target.closest('.track-head')) return;
     const clipNode = ev.target.closest('.clip');
-    const inHead = ev.target.closest('.track-head');
-    if (inHead) return;
+    const additive = ev.shiftKey || ev.ctrlKey || ev.metaKey || state.multiMode;
     if (clipNode) {
       const found = findClip(clipNode.dataset.clip);
       if (!found) return;
       ev.preventDefault();
-      if (state.selectedId !== found.clip.id) select(found.clip.id);
+      const id = found.clip.id;
       const handle = ev.target.dataset.handle;
+      let collapseTo = null;
+      if (handle) select(id);                         // trimming works on one clip
+      else if (additive) {
+        if (state.selectedIds.has(id)) { select(id, 'toggle'); return; }
+        select(id, 'add');
+      } else if (!state.selectedIds.has(id)) select(id);
+      else if (state.selectedIds.size > 1) collapseTo = id;   // plain click inside a group: keep it for dragging
+      const group = !handle && state.selectedIds.size > 1
+        ? selectedAll().map(s => ({ clip: s.clip, track: s.track, start: s.clip.start }))
+        : null;
       drag = {
         mode: handle ? 'trim-' + handle : 'move',
-        clip: found.clip, track: found.track,
-        x0: ev.clientX, orig: { start: found.clip.start, duration: found.clip.duration, in: found.clip.in },
-        pts: snapPoints(found.clip.id), moved: false,
+        clip: found.clip, track: found.track, group, collapseTo,
+        x0: ev.clientX, y0: ev.clientY,
+        orig: { start: found.clip.start, duration: found.clip.duration, in: found.clip.in, kf: JSON.parse(JSON.stringify(found.clip.kf || {})) },
+        pts: snapPoints(group ? new Set(group.map(g => g.clip.id)) : new Set([id])),
+        moved: false,
       };
       tlScroll.setPointerCapture(ev.pointerId);
       return;
     }
-    if (ev.target.closest('.ruler-row') || ev.target.closest('.lane')) {
-      if (ev.target.closest('.lane')) select(null);
+    if (ev.target.closest('.ruler-row')) {
       drag = { mode: 'scrub' };
       tlScroll.setPointerCapture(ev.pointerId);
       seek(timeAtClientX(ev.clientX));
+      return;
+    }
+    if (ev.target.closest('.lane')) {
+      // click an empty spot = move the playhead (and clear the selection); drag = box-select
+      drag = { mode: 'lane', x0: ev.clientX, y0: ev.clientY, additive, base: new Set(state.selectedIds), moved: false, mouse: ev.pointerType === 'mouse' };
+      if (drag.mouse) tlScroll.setPointerCapture(ev.pointerId);
     }
   });
+
+  function updateMarquee(d, ev) {
+    let box = $('#marquee');
+    if (!box) { box = el('div', { id: 'marquee', class: 'marquee' }); $('#tlContent').append(box); }
+    const cr = $('#tlContent').getBoundingClientRect();
+    const x1 = Math.min(d.x0, ev.clientX), x2 = Math.max(d.x0, ev.clientX);
+    const y1 = Math.min(d.y0, ev.clientY), y2 = Math.max(d.y0, ev.clientY);
+    box.style.cssText = `left:${x1 - cr.left}px;top:${y1 - cr.top}px;width:${x2 - x1}px;height:${y2 - y1}px`;
+    const hit = new Set(d.additive ? d.base : []);
+    for (const n of $$('.clip')) {
+      const r = n.getBoundingClientRect();
+      if (r.right > x1 && r.left < x2 && r.bottom > y1 && r.top < y2) hit.add(n.dataset.clip);
+    }
+    setSelection([...hit]);
+  }
+  const removeMarquee = () => { const m = $('#marquee'); if (m) m.remove(); };
 
   tlScroll.addEventListener('pointermove', (ev) => {
     if (!drag) return;
     if (drag.mode === 'scrub') { seek(timeAtClientX(ev.clientX)); return; }
-    const dx = (ev.clientX - drag.x0) / state.pps;
-    if (!drag.moved && Math.abs(ev.clientX - drag.x0) < 3 && drag.mode === 'move' && !drag.trackMoved) {
-      // tiny jitter: ignore until real movement (also allows vertical track change)
-      const t = trackAtClientY(ev.clientY);
-      if (!t || t === drag.track) return;
+    if (drag.mode === 'lane') {
+      if (!drag.mouse) return;                        // on touch, dragging scrolls the timeline instead
+      if (!drag.moved && Math.hypot(ev.clientX - drag.x0, ev.clientY - drag.y0) < 4) return;
+      drag.moved = true;
+      updateMarquee(drag, ev);
+      return;
     }
+    if (!drag.moved && Math.abs(ev.clientX - drag.x0) < 3 && Math.abs(ev.clientY - drag.y0) < 3) return;   // ignore jitter
     drag.moved = true;
+    const dx = (ev.clientX - drag.x0) / state.pps;
     const c = drag.clip, o = drag.orig;
-    if (drag.mode === 'move') {
+    if (drag.mode === 'move' && drag.group) {
+      // move the whole selection together, sideways only; snap on the grabbed clip's edges
+      const ids = new Set(drag.group.map(g => g.clip.id));
+      const s0 = o.start + dx;
+      const sStart = snapTime(s0, drag.pts), sEnd = snapTime(s0 + c.duration, drag.pts) - c.duration;
+      let d = (Math.abs(sStart - s0) <= Math.abs(sEnd - s0) ? sStart : sEnd) - o.start;
+      d = Math.max(d, -Math.min(...drag.group.map(g => g.start)));
+      if (drag.group.every(g => fitsExcept(g.track, g.start + d, g.clip.duration, ids))) {
+        for (const g of drag.group) g.clip.start = g.start + d;
+      }
+    } else if (drag.mode === 'move') {
       let start = Math.max(0, o.start + dx);
       const sEnd = snapTime(start + c.duration, drag.pts) - c.duration;
       const sStart = snapTime(start, drag.pts);
@@ -1075,7 +1339,6 @@
           drag.track.clips = drag.track.clips.filter(x => x !== c);
           target.clips.push(c);
           drag.track = target;
-          drag.trackMoved = true;
         }
       } else if (fits(drag.track, start, c.duration, c.id)) {
         c.start = start;
@@ -1091,27 +1354,44 @@
       c.start = s;
       c.duration = end - s;
       if (c.type === 'video' || c.type === 'audio') c.in = Math.max(0, o.in + (s - o.start) * c.speed);
+      c.kf = shiftKeys(o.kf, s - o.start);           // keyframes stay put on the timeline
     } else if (drag.mode === 'trim-r') {
-      const nexts = drag.track.clips.filter(x => x !== c && x.start >= clipEnd({ start: o.start, duration: o.duration }) - EPS);
+      const nexts = drag.track.clips.filter(x => x !== c && x.start >= o.start + o.duration - EPS);
       const nextStart = nexts.reduce((m, x) => Math.min(m, x.start), Infinity);
       let e = snapTime(o.start + o.duration + dx, drag.pts);
       e = clamp(e, o.start + MIN_DUR, Math.min(nextStart, o.start + srcLimit({ ...c, in: o.in })));
       c.duration = e - o.start;
     }
-    c.fadeIn = Math.min(c.fadeIn, c.duration / 2);
-    c.fadeOut = Math.min(c.fadeOut, c.duration / 2);
+    const moved = drag.group ? drag.group.map(g => g.clip) : [c];
+    for (const x of moved) {
+      x.fadeIn = Math.min(x.fadeIn, x.duration / 2);
+      x.fadeOut = Math.min(x.fadeOut, x.duration / 2);
+    }
     renderTimeline();
-    const node = $(`.clip[data-clip="${c.id}"]`);
-    if (node) node.classList.add('dragging');
+    for (const x of moved) {
+      const node = $(`.clip[data-clip="${x.id}"]`);
+      if (node) node.classList.add('dragging');
+    }
     if (!state.playing) { syncMedia(state.time, false); requestRender(); }
   });
 
-  const endDrag = () => {
+  const endDrag = (ev) => {
     if (!drag) return;
     const was = drag;
     drag = null;
-    if (was.mode !== 'scrub' && was.moved) { commit(); renderInspector(); }
-    else if (was.mode !== 'scrub') renderTimeline();
+    removeMarquee();
+    const cancelled = ev.type === 'pointercancel';
+    if (was.mode === 'scrub') return;
+    if (was.mode === 'lane') {
+      if (!was.moved && !cancelled) {
+        if (!was.additive) select(null);
+        seek(timeAtClientX(ev.clientX));
+      }
+      return;
+    }
+    if (was.moved) { commit(); renderInspector(); return; }
+    if (was.collapseTo && !cancelled) select(was.collapseTo);   // plain click on a grouped clip: select just it
+    renderTimeline();
   };
   tlScroll.addEventListener('pointerup', endDrag);
   tlScroll.addEventListener('pointercancel', endDrag);
@@ -1155,7 +1435,7 @@
     return { x: ((ev.clientX - r.left) / r.width) * canvas.width, y: ((ev.clientY - r.top) / r.height) * canvas.height };
   };
   const toLocal = (c, b, p) => {
-    const a = (-c.rotation * Math.PI) / 180;
+    const a = (-b.rot * Math.PI) / 180;
     const dx = p.x - b.cx, dy = p.y - b.cy;
     return { x: dx * Math.cos(a) - dy * Math.sin(a), y: dx * Math.sin(a) + dy * Math.cos(a) };
   };
@@ -1175,61 +1455,79 @@
   }
 
   let cdrag = null;
+  const onScaleHandle = (c, p) => {
+    const b = clipBox(c), l = toLocal(c, b, p);
+    return Math.hypot(l.x - b.w / 2, l.y - b.h / 2) <= handleRadius() * 1.8 ? b : null;
+  };
   canvas.addEventListener('pointerdown', (ev) => {
     if (state.exporting) return;
     if (state.playing) pause();
     const p = toCanvas(ev);
     const sel = selected();
-    if (sel && sel.clip.type !== 'audio' && isActive(sel.clip, state.time)) {
-      const b = clipBox(sel.clip), l = toLocal(sel.clip, b, p);
-      if (Math.hypot(l.x - b.w / 2, l.y - b.h / 2) <= handleRadius() * 1.8) {
-        cdrag = { mode: 'scale', clip: sel.clip, s0: sel.clip.scale, d0: Math.hypot(p.x - b.cx, p.y - b.cy) || 1, b };
+    const additive = ev.shiftKey || ev.ctrlKey || ev.metaKey || state.multiMode;
+    if (!additive && state.selectedIds.size === 1 && sel && isVisual(sel.clip) && isActive(sel.clip, state.time)) {
+      const b = onScaleHandle(sel.clip, p);
+      if (b) {
+        cdrag = { mode: 'scale', clip: sel.clip, p0: p, s0: valAt(sel.clip, 'scale'), d0: Math.hypot(p.x - b.cx, p.y - b.cy) || 1, b };
         canvas.setPointerCapture(ev.pointerId);
         return;
       }
     }
     const hit = hitTest(p);
-    if (hit) {
-      if (hit.id !== state.selectedId) select(hit.id);
-      cdrag = { mode: 'move', clip: hit, p0: p, x0: hit.x, y0: hit.y, moved: false };
-      canvas.setPointerCapture(ev.pointerId);
-    } else {
-      select(null);
-    }
+    if (!hit) { if (!additive) select(null); return; }
+    if (additive) {
+      if (state.selectedIds.has(hit.id)) { select(hit.id, 'toggle'); return; }
+      select(hit.id, 'add');
+    } else if (!state.selectedIds.has(hit.id)) select(hit.id);
+    // drag every selected clip that's on screen right now, together
+    const movers = selectedAll().map(s => s.clip).filter(c => isVisual(c) && isActive(c, state.time));
+    cdrag = {
+      mode: 'move', clip: hit, p0: p, moved: false,
+      starts: movers.map(c => ({ c, x: valAt(c, 'x'), y: valAt(c, 'y') })),
+      collapseTo: !additive && state.selectedIds.size > 1 ? hit.id : null,
+    };
+    canvas.setPointerCapture(ev.pointerId);
   });
   canvas.addEventListener('pointermove', (ev) => {
     if (!cdrag) {
       const sel = selected();
       let cur = 'default';
-      if (sel && sel.clip.type !== 'audio' && isActive(sel.clip, state.time)) {
+      if (sel && isVisual(sel.clip) && isActive(sel.clip, state.time)) {
         const p = toCanvas(ev), b = clipBox(sel.clip), l = toLocal(sel.clip, b, p);
-        if (Math.hypot(l.x - b.w / 2, l.y - b.h / 2) <= handleRadius() * 1.8) cur = 'nwse-resize';
+        if (state.selectedIds.size === 1 && Math.hypot(l.x - b.w / 2, l.y - b.h / 2) <= handleRadius() * 1.8) cur = 'nwse-resize';
         else if (Math.abs(l.x) <= b.w / 2 && Math.abs(l.y) <= b.h / 2) cur = 'move';
       }
       canvas.style.cursor = cur;
       return;
     }
     const p = toCanvas(ev), c = cdrag.clip;
+    if (!cdrag.moved && Math.hypot(p.x - cdrag.p0.x, p.y - cdrag.p0.y) < 2) return;   // ignore jitter
     cdrag.moved = true;
     if (cdrag.mode === 'move') {
-      let x = cdrag.x0 + (p.x - cdrag.p0.x) / canvas.width;
-      let y = cdrag.y0 + (p.y - cdrag.p0.y) / canvas.height;
+      const ddx = (p.x - cdrag.p0.x) / canvas.width, ddy = (p.y - cdrag.p0.y) / canvas.height;
+      // centre-snap on the grabbed clip; the rest of the group follows by the same amount
+      const grabbed = cdrag.starts.find(s => s.c === c) || cdrag.starts[0];
+      let sx = 0, sy = 0;
       guides = { v: false, h: false };
-      if (Math.abs(x - 0.5) < 0.015) { x = 0.5; guides.v = true; }
-      if (Math.abs(y - 0.5) < 0.015) { y = 0.5; guides.h = true; }
-      c.x = x; c.y = y;
+      if (grabbed) {
+        const x = grabbed.x + ddx, y = grabbed.y + ddy;
+        if (Math.abs(x - 0.5) < 0.015) { sx = 0.5 - x; guides.v = true; }
+        if (Math.abs(y - 0.5) < 0.015) { sy = 0.5 - y; guides.h = true; }
+      }
+      for (const s of cdrag.starts) { setProp(s.c, 'x', s.x + ddx + sx); setProp(s.c, 'y', s.y + ddy + sy); }
     } else {
       const d = Math.hypot(p.x - cdrag.b.cx, p.y - cdrag.b.cy);
-      c.scale = clamp(cdrag.s0 * (d / cdrag.d0), 0.05, 10);
+      setProp(c, 'scale', clamp(cdrag.s0 * (d / cdrag.d0), 0.05, 10));
     }
     requestRender();
     refreshInspectorValues();
   });
-  const endCanvasDrag = () => {
+  const endCanvasDrag = (ev) => {
     if (!cdrag) return;
-    const moved = cdrag.moved;
+    const was = cdrag;
     cdrag = null; guides = null;
-    if (moved) commit();
+    if (was.moved) { commit(); renderTimeline(); }
+    else if (was.collapseTo && ev.type !== 'pointercancel') select(was.collapseTo);
     requestRender();
   };
   canvas.addEventListener('pointerup', endCanvasDrag);
@@ -1238,34 +1536,75 @@
   // ------------------------------------------------------------------
   // selection + inspector
   // ------------------------------------------------------------------
-  function select(id) {
-    if (state.selectedId === id) return;
-    state.selectedId = id;
-    $$('.clip.selected').forEach(n => n.classList.remove('selected'));
-    if (id) { const n = $(`.clip[data-clip="${id}"]`); if (n) n.classList.add('selected'); }
-    renderInspector();
+  /** mode: 'replace' (default), 'add' or 'toggle'. select(null) clears the selection. */
+  function select(id, mode = 'replace') {
+    if (mode === 'toggle') {
+      const ids = new Set(state.selectedIds);
+      if (ids.has(id)) ids.delete(id); else ids.add(id);
+      setSelection([...ids], ids.has(id) ? id : null);
+    } else if (mode === 'add') {
+      setSelection([...state.selectedIds, id], id);
+    } else {
+      setSelection(id ? [id] : [], id);
+    }
+  }
+  function setSelection(ids, primary = null) {
+    const next = new Set(ids.filter(id => findClip(id)));
+    const prim = primary != null && next.has(primary) ? primary
+      : next.has(state.selectedId) ? state.selectedId : ([...next].pop() || null);
+    const same = next.size === state.selectedIds.size && [...next].every(i => state.selectedIds.has(i)) && prim === state.selectedId;
+    state.selectedIds = next;
+    state.selectedId = prim;
+    for (const n of $$('.clip')) n.classList.toggle('selected', next.has(n.dataset.clip));
+    if (!same) renderInspector();
     requestRender();
+  }
+  function selectAll() {
+    setSelection(allClips().map(c => c.id), state.selectedId);
   }
 
   const insp = $('#inspector');
-  let liveBindings = [];   // [{input, get, valEl, fmt}] for refreshInspectorValues
+  let liveBindings = [];   // things to refresh when the playhead moves (sliders, ◆ buttons)
+  let lastKfHint = 0;
+  const kfHint = () => {
+    if (Date.now() - lastKfHint < 3000) return;
+    lastKfHint = Date.now();
+    toast('This is animated with keyframes. Move the playhead over the clip to change it.');
+  };
 
   function section(title, ...kids) { return el('div', { class: 'insp-section' }, el('h3', {}, title), ...kids); }
 
+  /** opts.kf = {clip, prop} adds a ◆ keyframe button for that property. */
   function slider(label, get, set, min, max, step, show = (v) => v, opts = {}) {
     const val = el('span', { class: 'val' }, show(get()));
-    const input = el('input', { type: 'range', min, max, step, value: get() });
+    const input = el('input', { type: 'range', min, max, step, value: get(), 'aria-label': label });
+    let dia = null;
+    const updDia = () => {
+      if (!dia) return;
+      const { clip, prop } = opts.kf;
+      const here = playheadIn(clip) && keyIndexAt(clip, prop, localNow(clip)) >= 0;
+      dia.classList.toggle('on', here);
+      dia.classList.toggle('anim', hasKf(clip, prop));
+      dia.title = here ? `Remove the ${label} keyframe here` : `Add a ${label} keyframe here`;
+    };
+    if (opts.kf) {
+      dia = el('button', { class: 'kf-dia', type: 'button', 'aria-label': `${label} keyframe` }, '◆');
+      dia.addEventListener('click', () => toggleKey(opts.kf.clip, opts.kf.prop));
+      updDia();
+    }
     input.addEventListener('input', () => {
       set(parseFloat(input.value));
       val.textContent = show(get());
+      updDia();
       if (opts.timeline) renderTimeline();
       if (!state.playing) syncMedia(state.time, false);
       requestRender();
     });
     input.addEventListener('change', () => commit());
     input.addEventListener('dblclick', () => { if (opts.reset != null) { set(opts.reset); input.value = get(); val.textContent = show(get()); commit(); } });
-    liveBindings.push({ input, get, valEl: val, show });
-    return el('div', { class: 'ctl' }, el('label', { title: opts.reset != null ? 'Double-click slider to reset' : '' }, label), input, val);
+    liveBindings.push({ input, get, valEl: val, show, updDia });
+    return el('div', { class: 'ctl' + (dia ? ' has-kf' : '') },
+      el('label', { title: opts.reset != null ? 'Double-click slider to reset' : '' }, label), input, val, dia);
   }
   function colorCtl(label, get, set, extra) {
     const input = el('input', { type: 'color', value: (get() || '#000000').slice(0, 7) });
@@ -1285,12 +1624,129 @@
   }
 
   function refreshInspectorValues() {
-    for (const b of liveBindings) { b.input.value = b.get(); b.valEl.textContent = b.show(b.get()); }
+    for (const b of liveBindings) {
+      if (b.custom) { b.custom(); continue; }
+      b.input.value = b.get();
+      b.valEl.textContent = b.show(b.get());
+      if (b.updDia) b.updDia();
+    }
+  }
+
+  /** Animation presets for one or more visual clips. */
+  function animSection(list) {
+    const c0 = list[0];
+    const single = list.length === 1;
+    const moves = list.every(c => c.type === 'text') ? ANIM_MOVES.concat(ANIM_TEXT_ONLY) : ANIM_MOVES;
+    const outMoves = ANIM_MOVES;
+    const previewIn = () => { if (single && c0.animIn !== 'none') previewRange(c0.start, Math.min(clipEnd(c0) - 0.02, c0.start + Math.min(c0.animInDur, c0.duration / 2) + 0.4)); };
+    const previewOut = () => { if (single && c0.animOut !== 'none') previewRange(Math.max(c0.start, clipEnd(c0) - Math.min(c0.animOutDur, c0.duration / 2) - 0.4), clipEnd(c0) - 0.02); };
+    const previewLoop = () => { if (single && c0.animLoop !== 'none') previewRange(c0.start, Math.min(clipEnd(c0) - 0.02, c0.start + 2.5)); };
+    const pick = (label, options, key, after) => {
+      const s = el('select', { 'aria-label': label }, options.map(([v, l]) => el('option', { value: v, selected: c0[key] === v }, l)));
+      s.addEventListener('change', () => {
+        for (const c of list) {
+          if (s.value === 'typewriter' && c.type !== 'text') continue;
+          c[key] = s.value;
+          if (s.value === 'typewriter') c.animInDur = clamp(+(String(c.text || '').length * 0.06).toFixed(1), 0.5, 2);
+        }
+        commit();
+        renderInspector();
+        after();
+      });
+      return el('div', { class: 'ctl wide' }, el('label', {}, label), s);
+    };
+    const dur = (label, key, after) => slider(label, () => c0[key], v => { for (const c of list) c[key] = v; }, 0.1, 3, 0.1, v => v.toFixed(1) + 's');
+    const parts = [
+      pick('In', moves, 'animIn', previewIn),
+      c0.animIn !== 'none' ? dur('In length', 'animInDur') : null,
+      pick('Out', outMoves, 'animOut', previewOut),
+      c0.animOut !== 'none' ? dur('Out length', 'animOutDur') : null,
+      pick('Loop', ANIM_LOOPS, 'animLoop', previewLoop),
+    ];
+    if (single && (c0.animIn !== 'none' || c0.animOut !== 'none' || c0.animLoop !== 'none')) {
+      parts.push(el('div', { class: 'row', style: 'margin-top:8px' },
+        c0.animIn !== 'none' ? el('button', { type: 'button', onclick: previewIn }, '▶ Preview in') : null,
+        c0.animOut !== 'none' ? el('button', { type: 'button', onclick: previewOut }, '▶ Preview out') : null,
+        c0.animLoop !== 'none' ? el('button', { type: 'button', onclick: previewLoop }, '▶ Preview loop') : null,
+      ));
+    }
+    return section('Animation', ...parts);
+  }
+
+  function keyframeSection(c) {
+    const count = keyTimes(c).length;
+    const main = el('button', { type: 'button', class: 'kf-main', onclick: () => toggleAllKeys(c) });
+    const upd = () => {
+      const here = anyKeyHere(c);
+      main.classList.toggle('on', here);
+      main.textContent = here ? '◆ Remove keyframe here' : '◇ Add keyframe here';
+    };
+    upd();
+    liveBindings.push({ custom: upd });
+    return section('Keyframes',
+      el('p', { class: 'muted small', style: 'margin:0 0 8px' }, count
+        ? `${count} keyframe${count > 1 ? 's' : ''}. Move the playhead and change position, scale, rotation or opacity to animate between them.`
+        : 'Add a keyframe, move the playhead, then change position, scale, rotation or opacity. GhostCut animates in between.'),
+      el('div', { class: 'row' }, main),
+      count ? el('div', { class: 'row', style: 'margin-top:6px' },
+        el('button', { type: 'button', title: 'Previous keyframe', onclick: () => jumpKey(c, -1) }, '◀ Prev'),
+        el('button', { type: 'button', title: 'Next keyframe', onclick: () => jumpKey(c, 1) }, 'Next ▶'),
+        el('button', { type: 'button', onclick: () => clearKeys(c) }, 'Clear all'),
+      ) : null,
+      count > 1 ? selectCtl('Motion', KF_EASES, () => c.kfEase, v => { c.kfEase = v; }) : null,
+    );
+  }
+
+  function renderMultiInspector(list) {
+    const clips = list.map(s => s.clip);
+    const vis = clips.filter(isVisual);
+    const looks = clips.filter(c => c.type === 'video' || c.type === 'image');
+    const audible = list.filter(s => s.clip.type === 'video' || s.clip.type === 'audio');
+    insp.append(section(`☑ ${clips.length} clips selected`,
+      el('p', { class: 'muted small', style: 'margin:0 0 8px' }, 'Changes here apply to all of them. Drag any of them to move the group.'),
+      el('div', { class: 'row' },
+        el('button', { type: 'button', onclick: () => splitAt(state.time) }, '✂ Split'),
+        el('button', { type: 'button', onclick: duplicateSelected }, '⧉ Copy'),
+        el('button', { type: 'button', onclick: deleteSelected }, '🗑 Delete'),
+      ),
+      el('div', { class: 'row', style: 'margin-top:6px' },
+        el('button', { type: 'button', onclick: () => select(null) }, 'Clear selection'))));
+    if (vis.length) {
+      insp.append(animSection(vis));
+      const v0 = vis[0];
+      insp.append(section('Look',
+        slider('Opacity', () => Math.round(valAt(v0, 'opacity') * 100), v => { for (const c of vis) if (!setProp(c, 'opacity', v / 100)) kfHint(); }, 0, 100, 1, v => v + '%', { reset: 100 })));
+    }
+    if (looks.length) {
+      insp.append(section('Filters', el('div', { class: 'chips' }, Object.entries(FILTER_PRESETS).map(([k, p]) => {
+        const b = el('button', { type: 'button', class: 'chip' + (looks.every(c => c.preset === k) ? ' on' : '') },
+          el('div', { class: 'sw', style: `filter:${PRESET_CSS(k)}` }), el('span', {}, p.label));
+        b.addEventListener('click', () => { for (const c of looks) { c.preset = k; c.filters = { ...NO_FILTER, ...p.f }; } commit(); renderInspector(); });
+        return b;
+      }))));
+    }
+    if (audible.length) {
+      const a0 = audible[0].clip;
+      const speeds = [0.5, 1, 1.5, 2];
+      insp.append(section('Speed & Audio',
+        el('div', { class: 'row' }, speeds.map(s => {
+          const b = el('button', { type: 'button', class: audible.every(x => x.clip.speed === s) ? 'on' : '' }, s + '×');
+          b.addEventListener('click', () => { for (const x of audible) setSpeed(x.clip, x.track, s); commit(); renderInspector(); });
+          return b;
+        })),
+        slider('Volume', () => Math.round(a0.volume * 100), v => { for (const x of audible) x.clip.volume = v / 100; }, 0, 200, 1, v => v + '%', { reset: 100 })));
+    }
+    const c0 = clips[0];
+    insp.append(section('Fade',
+      slider('Fade in', () => c0.fadeIn, v => { for (const c of clips) c.fadeIn = Math.min(v, c.duration / 2); }, 0, 3, 0.05, v => v.toFixed(2) + 's', { reset: 0, timeline: true }),
+      slider('Fade out', () => c0.fadeOut, v => { for (const c of clips) c.fadeOut = Math.min(v, c.duration / 2); }, 0, 3, 0.05, v => v.toFixed(2) + 's', { reset: 0, timeline: true }),
+    ));
   }
 
   function renderInspector() {
     liveBindings = [];
     insp.innerHTML = '';
+    if (state.selectedIds.size > 1) { renderMultiInspector(selectedAll()); return; }
     const sel = selected();
     if (!sel) { insp.append(emptyInspector()); return; }
     const { clip: c, track } = sel;
@@ -1340,24 +1796,32 @@
         slider('Outline px', () => c.strokeW, v => { c.strokeW = v; }, 0, 30, 1, v => v, { reset: 0 }),
         colorCtl('Box', () => c.bg || '#000000', v => { c.bg = v; },
           toggleBtn(c.bg ? 'On' : 'Off', () => !!c.bg, v => { c.bg = v ? '#000000' : ''; renderInspector(); })),
-        selectCtl('Animation', ANIMS, () => c.anim, v => { c.anim = v; }),
       ));
     }
 
-    if (c.type !== 'audio') {
-      const fitBtns = c.type === 'text' ? null : el('div', { class: 'row', style: 'margin-top:8px' },
-        el('button', { onclick: () => { c.scale = 1; c.x = 0.5; c.y = 0.5; commit(); refreshInspectorValues(); } }, 'Fit'),
-        el('button', { onclick: () => { const mm = m || { w: 16, h: 9 }; c.scale = Math.max(canvas.width / mm.w, canvas.height / mm.h) / containScale(mm.w, mm.h); c.x = 0.5; c.y = 0.5; commit(); refreshInspectorValues(); } }, 'Fill'),
-        el('button', { onclick: () => { Object.assign(c, { x: 0.5, y: 0.5, scale: 1, rotation: 0, opacity: 1 }); commit(); refreshInspectorValues(); } }, 'Reset'),
+    if (isVisual(c)) {
+      const put = (p, v) => { if (!setProp(c, p, v)) kfHint(); };
+      const afterBtn = () => { commit(); refreshInspectorValues(); };
+      const fitBtns = el('div', { class: 'row', style: 'margin-top:8px' },
+        c.type === 'text' ? null : el('button', { type: 'button', onclick: () => { put('scale', 1); put('x', 0.5); put('y', 0.5); afterBtn(); } }, 'Fit'),
+        c.type === 'text' ? null : el('button', { type: 'button', onclick: () => {
+          const mm = m || { w: 16, h: 9 };
+          put('scale', Math.max(canvas.width / mm.w, canvas.height / mm.h) / containScale(mm.w, mm.h)); put('x', 0.5); put('y', 0.5); afterBtn();
+        } }, 'Fill'),
+        el('button', { type: 'button', title: 'Reset position, size, rotation and opacity, and remove keyframes', onclick: () => {
+          Object.assign(c, { x: 0.5, y: 0.5, scale: 1, rotation: 0, opacity: 1, kf: {} }); commit(); renderInspector();
+        } }, 'Reset'),
       );
       insp.append(section('Transform',
-        slider('X', () => +(c.x * 100).toFixed(1), v => { c.x = v / 100; }, -50, 150, 0.5, v => v + '%', { reset: 50 }),
-        slider('Y', () => +(c.y * 100).toFixed(1), v => { c.y = v / 100; }, -50, 150, 0.5, v => v + '%', { reset: 50 }),
-        slider('Scale', () => Math.round(c.scale * 100), v => { c.scale = v / 100; }, 5, 500, 1, v => v + '%', { reset: 100 }),
-        slider('Rotate', () => c.rotation, v => { c.rotation = v; }, -180, 180, 1, v => v + '°', { reset: 0 }),
-        slider('Opacity', () => Math.round(c.opacity * 100), v => { c.opacity = v / 100; }, 0, 100, 1, v => v + '%', { reset: 100 }),
+        slider('X', () => +(valAt(c, 'x') * 100).toFixed(1), v => put('x', v / 100), -50, 150, 0.5, v => v + '%', { reset: 50, kf: { clip: c, prop: 'x' } }),
+        slider('Y', () => +(valAt(c, 'y') * 100).toFixed(1), v => put('y', v / 100), -50, 150, 0.5, v => v + '%', { reset: 50, kf: { clip: c, prop: 'y' } }),
+        slider('Scale', () => Math.round(valAt(c, 'scale') * 100), v => put('scale', v / 100), 5, 500, 1, v => v + '%', { reset: 100, kf: { clip: c, prop: 'scale' } }),
+        slider('Rotate', () => Math.round(valAt(c, 'rotation')), v => put('rotation', v), -180, 180, 1, v => v + '°', { reset: 0, kf: { clip: c, prop: 'rotation' } }),
+        slider('Opacity', () => Math.round(valAt(c, 'opacity') * 100), v => put('opacity', v / 100), 0, 100, 1, v => v + '%', { reset: 100, kf: { clip: c, prop: 'opacity' } }),
         fitBtns,
       ));
+      insp.append(keyframeSection(c));
+      insp.append(animSection([c]));
     }
 
     if (c.type === 'video' || c.type === 'image') {
@@ -1400,7 +1864,9 @@
 
   function emptyInspector() {
     const keys = [
-      ['Space', 'Play / pause'], ['S', 'Split at playhead'], ['D', 'Duplicate'], ['Del', 'Delete clip'],
+      ['Space', 'Play / pause'], ['S', 'Split at playhead'], ['D', 'Duplicate'], ['Del', 'Delete selected'],
+      ['Shift+click', 'Select more clips'], ['Drag', 'Box-select on the timeline'], ['Ctrl A', 'Select everything'],
+      ['K', 'Add / remove keyframe'],
       ['← →', 'Step 1 frame (Shift: 1s)'], ['Home / End', 'Jump to start / end'], ['Ctrl Z', 'Undo'],
       ['Ctrl ⇧ Z', 'Redo'], ['+ / −', 'Zoom timeline'], ['Ctrl+scroll', 'Zoom timeline'],
     ];
@@ -1429,12 +1895,14 @@
     ['ukrainian', 'Ukrainian'], ['vietnamese', 'Vietnamese'],
   ];
   const CAPTION_STYLES = {
-    classic: { label: 'Classic', t: { color: '#ffffff', stroke: '#000000', strokeW: 12, bg: '', bold: true, shadow: false, glow: false, font: FONTS[0][0], anim: 'none' } },
-    pop:     { label: 'Pop',     t: { color: '#ffd43b', stroke: '#000000', strokeW: 14, bg: '', bold: true, shadow: false, glow: false, font: FONTS[1][0], anim: 'pop' } },
-    boxed:   { label: 'Boxed',   t: { color: '#ffffff', stroke: '#000000', strokeW: 0, bg: '#000000b3', bold: true, shadow: false, glow: false, font: FONTS[0][0], anim: 'none' } },
-    clean:   { label: 'Clean',   t: { color: '#ffffff', stroke: '#000000', strokeW: 0, bg: '', bold: true, shadow: true, glow: false, font: FONTS[0][0], anim: 'fade' } },
+    classic: { label: 'Classic', t: { color: '#ffffff', stroke: '#000000', strokeW: 12, bg: '', bold: true, shadow: false, glow: false, font: FONTS[0][0], animIn: 'none' } },
+    pop:     { label: 'Pop',     t: { color: '#ffd43b', stroke: '#000000', strokeW: 14, bg: '', bold: true, shadow: false, glow: false, font: FONTS[1][0], animIn: 'pop', animInDur: 0.2 } },
+    boxed:   { label: 'Boxed',   t: { color: '#ffffff', stroke: '#000000', strokeW: 0, bg: '#000000b3', bold: true, shadow: false, glow: false, font: FONTS[0][0], animIn: 'none' } },
+    clean:   { label: 'Clean',   t: { color: '#ffffff', stroke: '#000000', strokeW: 0, bg: '', bold: true, shadow: true, glow: false, font: FONTS[0][0], animIn: 'fade', animInDur: 0.15 } },
   };
-  const CAPTION_STYLE_KEYS = ['font', 'size', 'color', 'stroke', 'strokeW', 'bg', 'bold', 'italic', 'align', 'shadow', 'glow', 'anim', 'x', 'y', 'scale', 'rotation', 'opacity'];
+  // copied by "Apply style to all" (keyframes aren't: each caption has its own timing)
+  const CAPTION_STYLE_KEYS = ['font', 'size', 'color', 'stroke', 'strokeW', 'bg', 'bold', 'italic', 'align', 'shadow', 'glow',
+    'animIn', 'animInDur', 'animOut', 'animOutDur', 'animLoop', 'x', 'y', 'scale', 'rotation', 'opacity'];
 
   // Runs inside the worker. Loads the model once and keeps it for the next run.
   const CAPTION_WORKER_SRC = `
@@ -1867,7 +2335,7 @@
     const sg = $('#stickerGrid');
     for (const s of STICKERS) {
       const b = el('button', { title: 'Add sticker' }, s);
-      b.addEventListener('click', () => addText({ text: s, size: 220, bold: false, anim: 'pop' }));
+      b.addEventListener('click', () => addText({ text: s, size: 220, bold: false, animIn: 'pop' }));
       sg.append(b);
     }
     $$('.tab').forEach(tab => tab.addEventListener('click', () => {
@@ -1905,6 +2373,12 @@
     $('#addVTrackBtn').addEventListener('click', () => { insertTrack('visual', true); commit(); });
     $('#addATrackBtn').addEventListener('click', () => { insertTrack('audio'); commit(); });
     $('#snapChk').addEventListener('change', (e) => { state.snap = e.target.checked; });
+    $('#multiBtn').addEventListener('click', (e) => {
+      state.multiMode = !state.multiMode;
+      e.currentTarget.classList.toggle('on', state.multiMode);
+      e.currentTarget.setAttribute('aria-pressed', String(state.multiMode));
+      toast(state.multiMode ? 'Multi-select on: tap clips to add or remove them' : 'Multi-select off');
+    });
     $('#zoomRange').addEventListener('input', (e) => setZoom(+e.target.value));
 
     // drop files anywhere
@@ -1934,9 +2408,15 @@
       else if (mod && k.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
       else if (mod && k.toLowerCase() === 'y') { e.preventDefault(); redo(); }
       else if (mod && k.toLowerCase() === 'b') { e.preventDefault(); splitAt(state.time); }
+      else if (mod && k.toLowerCase() === 'a') { e.preventDefault(); selectAll(); }
       else if (mod) return;
       else if (k === 's' || k === 'S') splitAt(state.time);
       else if (k === 'd' || k === 'D') duplicateSelected();
+      else if (k === 'k' || k === 'K') {
+        const sel = selected();
+        if (state.selectedIds.size === 1 && sel && isVisual(sel.clip)) toggleAllKeys(sel.clip);
+        else toast('Select one video, photo or text clip to keyframe it');
+      }
       else if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); deleteSelected(); }
       else if (k === 'ArrowLeft') { e.preventDefault(); seek(state.time - (e.shiftKey ? 1 : 1 / 30)); }
       else if (k === 'ArrowRight') { e.preventDefault(); seek(state.time + (e.shiftKey ? 1 : 1 / 30)); }
@@ -1964,5 +2444,8 @@
   commit();
 
   // tiny hook for automated tests / power users poking around in devtools
-  window.GhostCut = { state, importFiles, addMediaToTimeline, addText, splitAt, seek, play, pause, startExport, undo, redo, projectDuration };
+  window.GhostCut = {
+    state, importFiles, addMediaToTimeline, addText, splitAt, seek, play, pause, startExport, undo, redo, projectDuration,
+    select, setSelection, selectAll, valAt, animFx, commit,
+  };
 })();

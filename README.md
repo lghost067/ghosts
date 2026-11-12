@@ -27,6 +27,16 @@ Want a public link? Turn on **GitHub Pages** for this repo (Settings → Pages �
   - English, auto-detect or 20 other languages; Fast (41 MB) or Accurate (77 MB) model, downloaded once then cached
   - 1–6 words per caption, 4 styles, text case, and one click to restyle or delete them all
   - Handles trimmed and sped-up clips; captions are normal text clips you can edit
+- **Keyframes** ◆: animate position, scale, rotation and opacity over time
+  - ◆ buttons per property plus "Add keyframe here", with prev/next jumping and markers on the timeline
+  - Changing an animated value adds a keyframe automatically, including when you drag on the preview
+  - Motion curves: smooth, linear, ease in/out, hold
+  - Keyframes survive split, trim and speed changes
+- **Animations**: In / Out / Loop presets on any clip (video, photo, text, stickers)
+  - fade, pop, zoom, slide, spin, typewriter, Ken Burns, pulse, float, sway, shake, rotate
+  - Adjustable length, with an instant preview when you pick one
+- **Multi-select**: Shift/Ctrl+click, box-select on the timeline, Ctrl+A, or the ☑ Multi-select button on phones
+  - Move, split, duplicate, delete, animate, filter, speed, volume and fade a whole group at once
 - **Stickers**: a pile of emoji 💀🔥✨
 - **Filters**: Vivid, B&W, Vintage, Warm, Cool, Drama, Dreamy, plus manual brightness, contrast, saturation, hue, sepia and blur
 - **Transform**: drag and scale right on the preview (with centre snapping), plus rotation, opacity and fit/fill
@@ -44,7 +54,10 @@ Want a public link? Turn on **GitHub Pages** for this repo (Settings → Pages �
 | Space | Play / pause |
 | S or Ctrl+B | Split at playhead |
 | D | Duplicate |
-| Delete | Delete clip |
+| Delete | Delete selected |
+| Shift/Ctrl+click | Add a clip to the selection |
+| Ctrl+A | Select everything |
+| K | Add / remove a keyframe |
 | ← / → | Step a frame (Shift: 1 second) |
 | Home / End | Jump to start / end |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
