@@ -94,6 +94,29 @@
     ['none', 'None'], ['kenburns', 'Slow zoom (Ken Burns)'], ['pulse', 'Pulse'], ['float', 'Float'],
     ['sway', 'Sway'], ['shake', 'Shake'], ['rotate', 'Rotate'],
   ];
+  // Loop tuning, in each loop's own units. A clip stores animLoopRate / animLoopAmt (null = the default here).
+  // Tempo is stored in beats per second but shown in BPM so it can be matched to a song.
+  const bpm = (hz) => ({ label: 'Tempo (BPM)', def: hz, min: 10, max: 300, step: 1, toUI: (v) => Math.round(v * 60), fromUI: (b) => b / 60, number: true,
+    title: 'Beats per minute: set it to your song\'s BPM to move on the beat' });
+  const pct1 = (v) => (v * 100).toFixed(1) + '%';
+  const LOOP_PARAMS = {
+    kenburns: { amt: { label: 'Zoom', def: 0.15, min: -0.5, max: 0.6, step: 0.01, title: 'How far it zooms over the clip. Below 0 zooms out instead',
+      show: (v) => (v < 0 ? '−' : '+') + Math.round(Math.abs(v) * 100) + '%' } },
+    pulse: { rate: bpm(1.4), amt: { label: 'Strength', def: 0.06, min: 0.01, max: 0.4, step: 0.01, show: (v) => '±' + Math.round(v * 100) + '%' } },
+    float: { rate: bpm(0.6), amt: { label: 'Distance', def: 0.015, min: 0.002, max: 0.15, step: 0.001, show: pct1 } },
+    sway:  { rate: bpm(0.5), amt: { label: 'Angle', def: 5, min: 1, max: 45, step: 1, show: (v) => '±' + v + '°' } },
+    shake: { rate: { label: 'Speed', def: 1, min: 0.2, max: 4, step: 0.1, show: (v) => v.toFixed(1) + '×' },
+             amt: { label: 'Strength', def: 0.006, min: 0.001, max: 0.05, step: 0.001, show: pct1 } },
+    rotate: { rate: { label: 'Speed (°/s)', def: 120, min: -720, max: 720, step: 5, number: true,
+      title: 'Degrees per second. Negative spins anticlockwise' } },
+  };
+  const LOOP_FIELD = { rate: 'animLoopRate', amt: 'animLoopAmt' };
+  /** A loop's rate or amount for clip c, falling back to the default for its loop type. */
+  function loopVal(c, key) {
+    const P = (LOOP_PARAMS[c.animLoop] || {})[key];
+    const v = c[LOOP_FIELD[key]];
+    return typeof v === 'number' && Number.isFinite(v) ? v : (P ? P.def : 1);
+  }
   // Keyframes: these properties can be animated over time.
   const KF_PROPS = ['x', 'y', 'scale', 'rotation', 'opacity'];
   const KF_EASES = [['smooth', 'Smooth'], ['linear', 'Linear'], ['in', 'Ease in'], ['out', 'Ease out'], ['hold', 'Hold (jump)']];
@@ -316,6 +339,8 @@
     x: 0.5, y: 0.5, scale: 1, rotation: 0, opacity: 1,
     filters: { ...NO_FILTER }, preset: 'none',
     animIn: 'none', animInDur: 0.5, animOut: 'none', animOutDur: 0.5, animLoop: 'none',
+    animLoopRate: null, animLoopAmt: null,   // loop tempo/strength (null = default for that loop)
+    animLoopOfs: 0,       // seconds the loop is already into its cycle at the clip start (keeps the beat across splits/trims)
     kf: {},               // prop -> [{t (seconds from clip start), v}], sorted by t
     kfEase: 'smooth',
   });
@@ -410,6 +435,7 @@
       b.in = c.in + left * c.speed;
       b.fadeIn = 0;
       b.animIn = 'none';          // the In animation stays on the first half…
+      b.animLoopOfs = (c.animLoopOfs || 0) + left;   // the loop carries on mid-beat instead of restarting
       c.duration = left;
       c.fadeOut = 0;
       c.animOut = 'none';         // …and the Out animation moves to the second half
@@ -578,16 +604,26 @@
     if (c.animIn && c.animIn !== 'none' && inDur > 0 && lt < inDur) applyMove(fx, c.animIn, clamp(lt / inDur, 0, 1), true);
     if (c.animOut && c.animOut !== 'none' && outDur > 0 && lt > D - outDur) applyMove(fx, c.animOut, clamp((D - lt) / outDur, 0, 1), false);
     const TAU = Math.PI * 2;
-    switch (c.animLoop) {
-      case 'kenburns': fx.scale *= 1 + 0.15 * clamp(lt / D, 0, 1); break;
-      case 'pulse': fx.scale *= 1 + 0.06 * Math.sin(TAU * 1.4 * lt); break;
-      case 'float': fx.dy += 0.015 * Math.sin(TAU * 0.6 * lt); break;
-      case 'sway': fx.rot += 5 * Math.sin(TAU * 0.5 * lt); break;
-      case 'shake':
-        fx.dx += 0.006 * (Math.sin(lt * 47) + Math.sin(lt * 29)) / 2;
-        fx.dy += 0.006 * (Math.sin(lt * 53) + Math.sin(lt * 31)) / 2;
-        break;
-      case 'rotate': fx.rot += 120 * lt; break;
+    if (c.animLoop && c.animLoop !== 'none') {
+      const rate = loopVal(c, 'rate'), amt = loopVal(c, 'amt');
+      const lp = lt + (c.animLoopOfs || 0);      // loop time, continuous across splits
+      switch (c.animLoop) {
+        case 'kenburns': {
+          const p = clamp(lt / D, 0, 1);
+          fx.scale *= amt >= 0 ? 1 + amt * p : 1 - amt * (1 - p);   // zoom in, or start close and zoom out
+          break;
+        }
+        case 'pulse': fx.scale *= 1 + amt * Math.sin(TAU * rate * lp); break;
+        case 'float': fx.dy += amt * Math.sin(TAU * rate * lp); break;
+        case 'sway': fx.rot += amt * Math.sin(TAU * rate * lp); break;
+        case 'shake': {
+          const q = lp * rate;
+          fx.dx += amt * (Math.sin(q * 47) + Math.sin(q * 29)) / 2;
+          fx.dy += amt * (Math.sin(q * 53) + Math.sin(q * 31)) / 2;
+          break;
+        }
+        case 'rotate': fx.rot += rate * lp; break;
+      }
     }
     return fx;
   }
@@ -1265,7 +1301,7 @@
         mode: handle ? 'trim-' + handle : 'move',
         clip: found.clip, track: found.track, group, collapseTo,
         x0: ev.clientX, y0: ev.clientY,
-        orig: { start: found.clip.start, duration: found.clip.duration, in: found.clip.in, kf: JSON.parse(JSON.stringify(found.clip.kf || {})) },
+        orig: { start: found.clip.start, duration: found.clip.duration, in: found.clip.in, kf: JSON.parse(JSON.stringify(found.clip.kf || {})), loopOfs: found.clip.animLoopOfs || 0 },
         pts: snapPoints(group ? new Set(group.map(g => g.clip.id)) : new Set([id])),
         moved: false,
       };
@@ -1355,6 +1391,7 @@
       c.duration = end - s;
       if (c.type === 'video' || c.type === 'audio') c.in = Math.max(0, o.in + (s - o.start) * c.speed);
       c.kf = shiftKeys(o.kf, s - o.start);           // keyframes stay put on the timeline
+      c.animLoopOfs = (o.loopOfs || 0) + (s - o.start);  // and so does the loop's beat
     } else if (drag.mode === 'trim-r') {
       const nexts = drag.track.clips.filter(x => x !== c && x.start >= o.start + o.duration - EPS);
       const nextStart = nexts.reduce((m, x) => Math.min(m, x.start), Infinity);
@@ -1576,8 +1613,12 @@
 
   /** opts.kf = {clip, prop} adds a ◆ keyframe button for that property. */
   function slider(label, get, set, min, max, step, show = (v) => v, opts = {}) {
-    const val = el('span', { class: 'val' }, show(get()));
     const input = el('input', { type: 'range', min, max, step, value: get(), 'aria-label': label });
+    // opts.number: a typeable box instead of the value label, for exact values like a song's BPM
+    const val = opts.number
+      ? el('input', { type: 'number', class: 'val-num', min, max, step, value: get(), 'aria-label': `${label} value`, inputmode: 'decimal' })
+      : el('span', { class: 'val' }, show(get()));
+    const showVal = () => { if (opts.number) { if (document.activeElement !== val) val.value = get(); } else val.textContent = show(get()); };
     let dia = null;
     const updDia = () => {
       if (!dia) return;
@@ -1594,17 +1635,33 @@
     }
     input.addEventListener('input', () => {
       set(parseFloat(input.value));
-      val.textContent = show(get());
+      showVal();
       updDia();
       if (opts.timeline) renderTimeline();
       if (!state.playing) syncMedia(state.time, false);
       requestRender();
     });
     input.addEventListener('change', () => commit());
-    input.addEventListener('dblclick', () => { if (opts.reset != null) { set(opts.reset); input.value = get(); val.textContent = show(get()); commit(); } });
-    liveBindings.push({ input, get, valEl: val, show, updDia });
-    return el('div', { class: 'ctl' + (dia ? ' has-kf' : '') },
-      el('label', { title: opts.reset != null ? 'Double-click slider to reset' : '' }, label), input, val, dia);
+    input.addEventListener('dblclick', () => { if (opts.reset != null) { set(opts.reset); input.value = get(); showVal(); updDia(); requestRender(); commit(); } });
+    if (opts.number) {
+      const fromBox = () => {
+        const n = parseFloat(val.value);
+        if (!Number.isFinite(n)) return false;
+        set(clamp(n, +min, +max));
+        input.value = get();
+        updDia();
+        if (!state.playing) syncMedia(state.time, false);
+        requestRender();
+        return true;
+      };
+      val.addEventListener('input', fromBox);
+      val.addEventListener('change', () => { fromBox(); val.value = get(); commit(); });
+      val.addEventListener('keydown', (e) => { if (e.key === 'Enter') val.blur(); });
+    }
+    liveBindings.push({ input, get, showVal, updDia });
+    const tip = [opts.title, opts.reset != null ? 'Double-click the slider to reset' : ''].filter(Boolean).join('. ');
+    return el('div', { class: 'ctl' + (dia ? ' has-kf' : '') + (opts.number ? ' num' : ''), title: opts.title || '' },
+      el('label', { title: tip }, label), input, val, dia);
   }
   function colorCtl(label, get, set, extra) {
     const input = el('input', { type: 'color', value: (get() || '#000000').slice(0, 7) });
@@ -1627,7 +1684,7 @@
     for (const b of liveBindings) {
       if (b.custom) { b.custom(); continue; }
       b.input.value = b.get();
-      b.valEl.textContent = b.show(b.get());
+      b.showVal();
       if (b.updDia) b.updDia();
     }
   }
@@ -1647,6 +1704,7 @@
         for (const c of list) {
           if (s.value === 'typewriter' && c.type !== 'text') continue;
           c[key] = s.value;
+          if (key === 'animLoop') { c.animLoopRate = null; c.animLoopAmt = null; }   // units differ per loop type
           if (s.value === 'typewriter') c.animInDur = clamp(+(String(c.text || '').length * 0.06).toFixed(1), 0.5, 2);
         }
         commit();
@@ -1663,6 +1721,17 @@
       c0.animOut !== 'none' ? dur('Out length', 'animOutDur') : null,
       pick('Loop', ANIM_LOOPS, 'animLoop', previewLoop),
     ];
+    // tempo / strength for the loop (only when every selected clip uses the same loop)
+    const lp = LOOP_PARAMS[c0.animLoop];
+    if (lp && list.every(c => c.animLoop === c0.animLoop)) {
+      for (const key of ['rate', 'amt']) {
+        const P = lp[key];
+        if (!P) continue;
+        const toUI = P.toUI || ((v) => v), fromUI = P.fromUI || ((v) => v);
+        parts.push(slider(P.label, () => toUI(loopVal(c0, key)), (v) => { for (const c of list) c[LOOP_FIELD[key]] = fromUI(v); },
+          P.min, P.max, P.step, P.show || ((v) => v), { number: P.number, title: P.title, reset: toUI(P.def) }));
+      }
+    }
     if (single && (c0.animIn !== 'none' || c0.animOut !== 'none' || c0.animLoop !== 'none')) {
       parts.push(el('div', { class: 'row', style: 'margin-top:8px' },
         c0.animIn !== 'none' ? el('button', { type: 'button', onclick: previewIn }, '▶ Preview in') : null,
@@ -1902,7 +1971,7 @@
   };
   // copied by "Apply style to all" (keyframes aren't: each caption has its own timing)
   const CAPTION_STYLE_KEYS = ['font', 'size', 'color', 'stroke', 'strokeW', 'bg', 'bold', 'italic', 'align', 'shadow', 'glow',
-    'animIn', 'animInDur', 'animOut', 'animOutDur', 'animLoop', 'x', 'y', 'scale', 'rotation', 'opacity'];
+    'animIn', 'animInDur', 'animOut', 'animOutDur', 'animLoop', 'animLoopRate', 'animLoopAmt', 'x', 'y', 'scale', 'rotation', 'opacity'];
 
   // Runs inside the worker. Loads the model once and keeps it for the next run.
   const CAPTION_WORKER_SRC = `
