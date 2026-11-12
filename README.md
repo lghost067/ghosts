@@ -51,6 +51,14 @@ If you still get a 404 right after a deploy, your browser is showing an old copy
   - Tune every loop: tempo in **BPM** (type your song's BPM to move on the beat), plus strength, angle, distance or zoom
   - Rotate can spin either way, and Ken Burns can zoom in or out
   - Loops stay on the beat when you split or trim a clip
+- **Transitions** ⧓: 34 of them, on any cut between two touching clips (tap the ＋ on the cut)
+  - Basics: fade, dip to black/white, flash, blur
+  - Motion: push, slide and whip pan (with motion blur) in 4 directions
+  - Camera: zoom in/out (zoom blur), spin, flip, shake
+  - Shapes: wipes in 4 directions, circle open/close, clock wipe, blinds, doors
+  - FX: glitch (RGB split), pixelate, film burn
+  - Live animated previews of your own clips, adjustable length, 🎲 random, and apply to every cut at once
+  - Video keeps playing through the transition on both sides, and transitions export like everything else
 - **Multi-select**: Shift/Ctrl+click, box-select on the timeline, Ctrl+A, or the ☑ Multi-select button on phones
   - Move, split, duplicate, delete, animate, filter, speed, volume and fade a whole group at once
 - **Stickers**: a pile of emoji 💀🔥✨
@@ -70,7 +78,7 @@ If you still get a 404 right after a deploy, your browser is showing an old copy
 | Space | Play / pause |
 | S or Ctrl+B | Split at playhead |
 | D | Duplicate |
-| Delete | Delete selected |
+| Delete | Delete selected (or the selected transition) |
 | Shift/Ctrl+click | Add a clip to the selection |
 | Ctrl+A | Select everything |
 | K | Add / remove a keyframe |

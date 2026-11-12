@@ -273,6 +273,28 @@ kbd { background: var(--panel-2); border: 1px solid var(--line); border-bottom-w
 .clip .h.l { left: 0; }
 .clip .h.r { right: 0; }
 .clip:not(.selected) .h { background: transparent; }
+
+/* transitions: a button on every cut, and a striped zone where one plays */
+.tjoin {
+  position: absolute; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; padding: 0; z-index: 5;
+  display: grid; place-items: center; font-size: 13px; line-height: 1; font-weight: 700;
+  border-radius: 6px; background: #0e0e14e6; border: 1.5px solid #ffffff66; color: #fff; box-shadow: 0 2px 6px #0009;
+}
+.tjoin:hover { background: #26263a; border-color: #fff; }
+.tjoin.has { background: var(--accent-2); border-color: #fff; color: #06141a; }
+.tjoin.sel { box-shadow: 0 0 0 2px #fff, 0 0 14px var(--accent); }
+.twin {
+  position: absolute; top: 4px; bottom: 4px; z-index: 4; pointer-events: none; border-radius: 5px;
+  background: repeating-linear-gradient(135deg, #22d3ee55 0 6px, #22d3ee1a 6px 12px); border: 1px solid #22d3eeaa;
+}
+.tr-cat { margin: 10px 0 6px; font-size: 11px; font-weight: 600; color: var(--muted); }
+.tr-cat:first-of-type { margin-top: 0; }
+.tr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 6px; }
+.tr-tile { display: flex; flex-direction: column; gap: 4px; padding: 4px; border-radius: 8px; font-size: 11px; min-width: 0; }
+.tr-tile canvas { display: block; width: 100%; height: auto; aspect-ratio: 3 / 2; border-radius: 5px; background: #000; }
+.tr-tile span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tr-tile.on { box-shadow: 0 0 0 1px #fff; }
+.trans-link { width: 100%; text-align: left; }
 .clip:not(.selected) .h::after { opacity: 0; }
 .clip:hover .h::after { opacity: 1; }
 

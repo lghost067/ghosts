@@ -139,13 +139,14 @@
     time: 0,
     playing: false,
     stopAt: null,         // when previewing an animation, pause here
+    selectedTrans: null,  // id of the clip whose cut (into the next clip) is selected
     pps: 80,              // timeline pixels per second
     snap: true,
     exporting: null,
   };
 
   const canvas = $('#stage');
-  const ctx = canvas.getContext('2d');
+  let ctx = canvas.getContext('2d');   // swapped briefly to draw clips into transition layers
 
   const tracks = () => state.project.tracks;
   const allClips = () => tracks().flatMap(t => t.clips);
@@ -212,6 +213,7 @@
     state.project = JSON.parse(history.stack[i]);
     state.selectedIds = new Set([...state.selectedIds].filter(id => findClip(id)));
     if (state.selectedId && !findClip(state.selectedId)) state.selectedId = [...state.selectedIds].pop() || null;
+    if (state.selectedTrans && !findClip(state.selectedTrans)) state.selectedTrans = null;
     for (const c of allClips()) { const m = state.media.get(c.mediaId); if (m) m.removed = false; }
     renderMediaGrid();
     syncTopbar();
@@ -343,6 +345,7 @@
     animLoopOfs: 0,       // seconds the loop is already into its cycle at the clip start (keeps the beat across splits/trims)
     kf: {},               // prop -> [{t (seconds from clip start), v}], sorted by t
     kfEase: 'smooth',
+    trans: null,          // transition into the touching next clip: {type, dur}
   });
 
   function clipFromMedia(m) {
@@ -439,6 +442,7 @@
       c.duration = left;
       c.fadeOut = 0;
       c.animOut = 'none';         // …and the Out animation moves to the second half
+      c.trans = null;             // the transition sits on the clip's end, so the second half keeps it
       // keep motion continuous: both halves get a keyframe at the cut with the value there
       for (const p of KF_PROPS) {
         const keys = (c.kf && c.kf[p]) || [];
@@ -456,6 +460,11 @@
   }
 
   function deleteSelected() {
+    if (state.selectedTrans) {
+      const f = findClip(state.selectedTrans);
+      if (f && f.clip.trans) { f.clip.trans = null; commit(); renderInspector(); toast('Transition removed'); }
+      return;
+    }
     const ids = new Set(state.selectedIds);
     if (!ids.size) return;
     for (const tr of tracks()) tr.clips = tr.clips.filter(c => !ids.has(c.id));
@@ -729,24 +738,39 @@
   /** Keep every <video>/<audio> element aligned with timeline time t. */
   function syncMedia(t, playing) {
     const active = new Set();
+    // during a transition the outgoing clip keeps playing past its end and the incoming one starts early (both silent)
+    const ext = new Map();
+    for (const T of activeTransitions()) {
+      ext.set(T.a.id, { ...ext.get(T.a.id), to: T.cut + T.d / 2 });
+      ext.set(T.b.id, { ...ext.get(T.b.id), from: T.cut - T.d / 2 });
+    }
     for (const tr of tracks()) {
       for (const c of tr.clips) {
         if (c.type !== 'video' && c.type !== 'audio') continue;
+        const x = ext.get(c.id) || {};
+        const from = x.from != null ? x.from : c.start, to = x.to != null ? x.to : clipEnd(c);
         const within = isActive(c, t);
-        const upcoming = !within && t < c.start && c.start - t < 1.5;
-        if (!within && !upcoming) continue;
+        const visible = t >= from - EPS && t < to - EPS;
+        const upcoming = !visible && t < from && from - t < 1.5;
+        if (!visible && !upcoming) continue;
         const e = getEl(c);
         if (!e) continue;
         const v = e.el;
+        const m = state.media.get(c.mediaId);
+        const maxT = m && isFinite(m.duration) && m.duration > 0 ? Math.max(0, m.duration - 0.04) : Infinity;
+        const srcAt = (tt) => c.in + (tt - c.start) * c.speed;
         if (upcoming) {   // pre-roll so the first frame is decoded when we get there
-          if (v.paused && Math.abs(v.currentTime - c.in) > 0.05 && !v.seeking) v.currentTime = c.in;
+          const s0 = clamp(srcAt(from), 0, maxT);
+          if (v.paused && Math.abs(v.currentTime - s0) > 0.05 && !v.seeking) v.currentTime = s0;
           continue;
         }
         active.add(c.id);
-        const target = c.in + (t - c.start) * c.speed;
-        const audible = !tr.muted && !(c.type === 'video' && tr.hidden);
+        const raw = srcAt(t);
+        const target = clamp(raw, 0, maxT);
+        const held = raw !== target;      // before the footage starts / after it ends: hold that frame
+        const audible = within && !tr.muted && !(c.type === 'video' && tr.hidden);
         setVolume(e, audible ? c.volume * fadeFactor(c, t) : 0);
-        if (playing) {
+        if (playing && !held) {
           if (v.playbackRate !== c.speed) v.playbackRate = c.speed;
           if (v.paused) {
             if (Math.abs(v.currentTime - target) > 0.05) v.currentTime = target;
@@ -894,12 +918,309 @@
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.restore();
     const ts = tracks();
+    const trans = activeTransitions();
+    let first = true;
     for (let i = ts.length - 1; i >= 0; i--) {
       const tr = ts[i];
       if (tr.kind !== 'visual' || tr.hidden) continue;
-      for (const c of tr.clips) if (isActive(c, t)) drawClip(c, t);
+      const T = trans.find(x => x.track === tr && t >= x.cut - x.d / 2 - EPS && t < x.cut + x.d / 2 - EPS);
+      for (const c of tr.clips) if (isActive(c, t) && !(T && (c === T.a || c === T.b))) drawClip(c, t);
+      if (T) drawTransition(T, t, first);    // the bottom track is drawn as solid frames
+      first = false;
     }
     if (!state.exporting && !state.playing) drawOverlay(t);
+  }
+
+  // ------------------------------------------------------------------
+  // transitions between touching clips on the same track
+  // ------------------------------------------------------------------
+  const TRANS_DEFAULT_DUR = 0.5;
+  const TOUCH = 1e-3;                  // clips closer than this (seconds) count as touching
+  const TAU = Math.PI * 2;
+  const sstep = (a, b, x) => { const k = clamp((x - a) / (b - a), 0, 1); return k * k * (3 - 2 * k); };
+  const inOut3 = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+  const inOut5 = (p) => (p < 0.5 ? 16 * Math.pow(p, 5) : 1 - Math.pow(-2 * p + 2, 5) / 2);
+  const peak = (p) => 1 - Math.abs(p - 0.5) * 2;      // 0 → 1 at the cut → 0
+  const hash = (n) => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+
+  /** Draw a full-frame layer with an optional offset / scale / rotation / alpha / CSS filter. */
+  function put(g, L, W, H, o = {}) {
+    const a = o.a == null ? 1 : o.a;
+    if (a <= 0) return;
+    g.save();
+    g.globalAlpha = Math.min(1, a);
+    if (o.f) g.filter = o.f;
+    g.translate(W / 2 + (o.x || 0), H / 2 + (o.y || 0));
+    if (o.r) g.rotate(o.r);
+    const s = o.s == null ? 1 : o.s;
+    g.scale(o.sx == null ? s : o.sx, o.sy == null ? s : o.sy);
+    g.drawImage(L, -W / 2, -H / 2, W, H);
+    g.restore();
+  }
+  /** Average n copies (motion / zoom / spin blur): draw(alpha, f) with f from −0.5 to 0.5. */
+  function smear(n, draw) { for (let k = 0; k < n; k++) draw(1 / (k + 1), n === 1 ? 0 : k / (n - 1) - 0.5); }
+  function fillAll(g, color, a, W, H) {
+    if (a <= 0) return;
+    g.save(); g.globalAlpha = Math.min(1, a); g.fillStyle = color; g.fillRect(0, 0, W, H); g.restore();
+  }
+  function clipped(g, path, L, W, H, o) { g.save(); g.beginPath(); path(); g.clip(); put(g, L, W, H, o); g.restore(); }
+
+  // scratch canvases (kept separately for the preview and for the little picker thumbnails)
+  let tmpTag = 'm';
+  const tmpPool = new Map();
+  function tmp(key, w, h) {
+    const k = tmpTag + key;
+    let c = tmpPool.get(k);
+    if (!c) { c = document.createElement('canvas'); tmpPool.set(k, c); }
+    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+    return c;
+  }
+  function tint(c, L, color) {
+    const x = c.getContext('2d');
+    x.globalCompositeOperation = 'copy'; x.drawImage(L, 0, 0);
+    x.globalCompositeOperation = 'multiply'; x.fillStyle = color; x.fillRect(0, 0, c.width, c.height);
+    x.globalCompositeOperation = 'destination-in'; x.drawImage(L, 0, 0);
+    x.globalCompositeOperation = 'source-over';
+    return c;
+  }
+  function rgbSplit(L, W, H, dx) {
+    const red = tint(tmp('r', W, H), L, '#ff0000'), cyan = tint(tmp('c', W, H), L, '#00ffff');
+    const out = tmp('o', W, H), x = out.getContext('2d');
+    x.clearRect(0, 0, W, H);
+    x.globalCompositeOperation = 'lighter';
+    x.drawImage(red, dx, 0); x.drawImage(cyan, -dx, 0);
+    x.globalCompositeOperation = 'source-over';
+    return out;
+  }
+
+  const TRANSITIONS = {};
+  const TRANS_CATS = ['Basics', 'Motion', 'Camera', 'Shapes', 'FX'];
+  const defTrans = (id, label, cat, draw) => { TRANSITIONS[id] = { id, label, cat, draw }; };
+  const cutTo = (g, A, B, p, W, H) => put(g, p < 0.5 ? A : B, W, H);
+  function dip(color) {
+    return (g, A, B, p, W, H) => {
+      if (p < 0.5) { put(g, A, W, H); fillAll(g, color, sstep(0, 0.5, p), W, H); }
+      else { put(g, B, W, H); fillAll(g, color, 1 - sstep(0.5, 1, p), W, H); }
+    };
+  }
+
+  // Basics
+  defTrans('fade', 'Fade', 'Basics', (g, A, B, p, W, H) => { put(g, A, W, H); put(g, B, W, H, { a: sstep(0, 1, p) }); });
+  defTrans('black', 'Dip to black', 'Basics', dip('#000000'));
+  defTrans('white', 'Dip to white', 'Basics', dip('#ffffff'));
+  defTrans('flash', 'Flash', 'Basics', (g, A, B, p, W, H) => {
+    const q = Math.pow(peak(p), 1.6);
+    put(g, p < 0.5 ? A : B, W, H, { s: 1 + 0.06 * q });
+    fillAll(g, '#ffffff', q, W, H);
+  });
+  defTrans('blur', 'Blur', 'Basics', (g, A, B, p, W, H) => {
+    const q = Math.sin(Math.PI * p), b = q * Math.min(W, H) * 0.035;
+    const f = b > 0.3 ? `blur(${b.toFixed(1)}px)` : undefined;
+    put(g, A, W, H, { f, s: 1 + 0.06 * q });
+    put(g, B, W, H, { f, s: 1 + 0.06 * q, a: sstep(0.3, 0.7, p) });
+  });
+
+  // Motion: push, slide and whip pan in four directions ("left" = moves towards the left)
+  const DIRS = { left: [1, 0], right: [-1, 0], up: [0, 1], down: [0, -1] };
+  const ARROWS = { left: '←', right: '→', up: '↑', down: '↓' };
+  for (const [d, [vx, vy]] of Object.entries(DIRS)) {
+    defTrans('push-' + d, 'Push ' + ARROWS[d], 'Motion', (g, A, B, p, W, H) => {
+      const e = inOut3(p);
+      put(g, A, W, H, { x: -e * vx * W, y: -e * vy * H });
+      put(g, B, W, H, { x: (1 - e) * vx * W, y: (1 - e) * vy * H });
+    });
+  }
+  for (const [d, [vx, vy]] of Object.entries(DIRS)) {
+    defTrans('slide-' + d, 'Slide ' + ARROWS[d], 'Motion', (g, A, B, p, W, H) => {
+      const e = inOut3(p);
+      put(g, A, W, H, { s: 1 - 0.06 * e });
+      g.save();
+      g.shadowColor = 'rgba(0,0,0,.55)'; g.shadowBlur = Math.min(W, H) * 0.04;
+      put(g, B, W, H, { x: (1 - e) * vx * W, y: (1 - e) * vy * H });
+      g.restore();
+    });
+  }
+  for (const [d, [vx, vy]] of Object.entries(DIRS)) {
+    defTrans('whip-' + d, 'Whip ' + ARROWS[d], 'Motion', (g, A, B, p, W, H) => {
+      const e = inOut5(p);
+      const vel = (inOut5(Math.min(1, p + 0.02)) - inOut5(Math.max(0, p - 0.02))) / 0.04;   // 0 … 5
+      const len = Math.min(0.5, vel * 0.12);                                                  // motion blur, in frames
+      smear(len > 0.01 ? 12 : 1, (a, f) => {
+        const o = e + f * len;
+        put(g, A, W, H, { x: -o * vx * W, y: -o * vy * H, a });
+        put(g, B, W, H, { x: (1 - o) * vx * W, y: (1 - o) * vy * H, a });
+      });
+    });
+  }
+
+  // Camera
+  defTrans('zoom-in', 'Zoom in', 'Camera', (g, A, B, p, W, H) => {
+    const q = peak(p), spread = 0.3 * q * q, n = q > 0.05 ? 10 : 1;
+    if (p < 0.5) { const s = 1 + 1.5 * Math.pow(p * 2, 2.2); smear(n, (a, f) => put(g, A, W, H, { s: s * (1 + f * spread), a })); }
+    else { const s = 1 + 0.8 * Math.pow((1 - p) * 2, 2.2); smear(n, (a, f) => put(g, B, W, H, { s: s * (1 + f * spread), a })); }
+  });
+  defTrans('zoom-out', 'Zoom out', 'Camera', (g, A, B, p, W, H) => {
+    const e = inOut3(p), q = peak(p), fade = 1 - sstep(0.55, 1, p);
+    put(g, B, W, H, { s: 1 + 0.6 * (1 - e) });
+    smear(q > 0.05 ? 8 : 1, (a, f) => put(g, A, W, H, { s: Math.max(0.01, (1 - 0.75 * e) * (1 + f * 0.2 * q)), a: a * fade }));
+  });
+  defTrans('spin', 'Spin', 'Camera', (g, A, B, p, W, H) => {
+    const q = peak(p), spread = 0.7 * q, n = q > 0.05 ? 10 : 1;
+    if (p < 0.5) { const k = Math.pow(p * 2, 2); smear(n, (a, f) => put(g, A, W, H, { r: k * Math.PI + f * spread, s: 1 + 0.6 * k, a })); }
+    else { const k = Math.pow((1 - p) * 2, 2); smear(n, (a, f) => put(g, B, W, H, { r: -k * Math.PI + f * spread, s: 1 + 0.6 * k, a })); }
+  });
+  defTrans('flip', 'Flip', 'Camera', (g, A, B, p, W, H) => {
+    const c = Math.cos(Math.PI * inOut3(p)), sx = Math.max(0.002, Math.abs(c));
+    put(g, c >= 0 ? A : B, W, H, { sx, sy: 1 - 0.08 * (1 - sx) });
+    g.save(); g.globalAlpha = 0.55 * (1 - sx); g.fillStyle = '#000';     // shade the card as it turns
+    g.fillRect((W - W * sx) / 2, 0, W * sx, H); g.restore();
+  });
+  defTrans('shake', 'Shake', 'Camera', (g, A, B, p, W, H) => {
+    const q = Math.pow(peak(p), 1.5), m = Math.min(W, H);
+    put(g, p < 0.5 ? A : B, W, H, { x: Math.sin(p * 97) * q * m * 0.06, y: Math.cos(p * 73) * q * m * 0.05, r: Math.sin(p * 61) * q * 0.06, s: 1 + 0.15 * q });
+    fillAll(g, '#ffffff', Math.pow(peak(p), 6) * 0.7, W, H);
+  });
+
+  // Shapes
+  for (const [d, [vx, vy]] of Object.entries(DIRS)) {
+    defTrans('wipe-' + d, 'Wipe ' + ARROWS[d], 'Shapes', (g, A, B, p, W, H) => {
+      const e = inOut3(p);
+      put(g, A, W, H);
+      if (e <= 0) return;
+      let x = 0, y = 0, w = W, h = H;
+      if (vx) { w = e * W; x = vx > 0 ? W - w : 0; } else { h = e * H; y = vy > 0 ? H - h : 0; }
+      clipped(g, () => g.rect(x, y, w, h), B, W, H);
+      if (e >= 1) return;
+      const lw = Math.max(1, Math.min(W, H) * 0.006);   // a bright edge on the wipe
+      g.save(); g.fillStyle = 'rgba(255,255,255,.9)'; g.shadowColor = '#ffffff'; g.shadowBlur = lw * 4;
+      if (vx) g.fillRect((vx > 0 ? x : x + w) - lw / 2, 0, lw, H); else g.fillRect(0, (vy > 0 ? y : y + h) - lw / 2, W, lw);
+      g.restore();
+    });
+  }
+  defTrans('circle-open', 'Circle open', 'Shapes', (g, A, B, p, W, H) => {
+    const r = inOut3(p) * Math.hypot(W, H) / 2;
+    put(g, A, W, H);
+    if (r > 0) clipped(g, () => g.arc(W / 2, H / 2, r, 0, TAU), B, W, H);
+  });
+  defTrans('circle-close', 'Circle close', 'Shapes', (g, A, B, p, W, H) => {
+    const r = (1 - inOut3(p)) * Math.hypot(W, H) / 2;
+    put(g, B, W, H);
+    if (r > 0) clipped(g, () => g.arc(W / 2, H / 2, r, 0, TAU), A, W, H);
+  });
+  defTrans('clock', 'Clock wipe', 'Shapes', (g, A, B, p, W, H) => {
+    const e = inOut3(p);
+    put(g, A, W, H);
+    if (e <= 0) return;
+    clipped(g, () => { g.moveTo(W / 2, H / 2); g.arc(W / 2, H / 2, Math.hypot(W, H), -Math.PI / 2, -Math.PI / 2 + e * TAU); g.closePath(); }, B, W, H);
+  });
+  defTrans('blinds', 'Blinds', 'Shapes', (g, A, B, p, W, H) => {
+    put(g, A, W, H);
+    const n = 8, bh = H / n;
+    const rows = [];
+    for (let i = 0; i < n; i++) {
+      const e = inOut3(clamp((p - (i / n) * 0.4) / 0.6, 0, 1));
+      if (e > 0) rows.push([i * bh, e * bh + (e >= 1 ? 1 : 0)]);
+    }
+    if (rows.length) clipped(g, () => { for (const [y, h] of rows) g.rect(0, y, W, h); }, B, W, H);
+  });
+  defTrans('doors', 'Doors', 'Shapes', (g, A, B, p, W, H) => {
+    const e = inOut3(p), off = (e * W) / 2, hw = Math.floor(W / 2);
+    put(g, B, W, H, { s: 1.15 - 0.15 * e });
+    g.save(); g.shadowColor = 'rgba(0,0,0,.6)'; g.shadowBlur = Math.min(W, H) * 0.03;
+    g.drawImage(A, 0, 0, hw, H, -off, 0, hw, H);
+    g.drawImage(A, hw, 0, W - hw, H, hw + off, 0, W - hw, H);
+    g.restore();
+  });
+
+  // FX
+  defTrans('glitch', 'Glitch', 'FX', (g, A, B, p, W, H) => {
+    const q = peak(p), step = Math.floor(p * 30), m = Math.min(W, H);
+    let L = p < 0.5 ? A : B;
+    if (q > 0.3 && hash(step) < 0.35) L = L === A ? B : A;        // flicker between the clips near the cut
+    const src = q > 0.05 ? rgbSplit(L, W, H, Math.round(q * m * 0.03 * (0.5 + hash(step + 7)))) : L;
+    const n = 14;
+    for (let i = 0; i < n; i++) {
+      const y = Math.floor((i * H) / n), h = Math.floor(((i + 1) * H) / n) - y;
+      if (h <= 0) continue;
+      const dx = hash(step * 31 + i) < 0.35 * q ? (hash(step + i * 13) - 0.5) * q * W * 0.25 : 0;
+      g.drawImage(src, 0, y, W, h, dx, y, W, h);
+    }
+    if (q > 0.2) {
+      g.save(); g.globalAlpha = 0.18 * q; g.fillStyle = '#ffffff';
+      for (let i = 0; i < 4; i++) g.fillRect(0, hash(step * 7 + i) * H, W, Math.max(1, m * 0.004));
+      g.restore();
+    }
+  });
+  defTrans('pixelate', 'Pixelate', 'FX', (g, A, B, p, W, H) => {
+    const L = p < 0.5 ? A : B;
+    const size = Math.max(1, Math.round(Math.pow(peak(p), 1.4) * Math.min(W, H) / 14));
+    if (size <= 1) { put(g, L, W, H); return; }
+    const w = Math.ceil(W / size), h = Math.ceil(H / size);
+    const sm = tmp('px', w, h), x = sm.getContext('2d');
+    x.clearRect(0, 0, w, h); x.drawImage(L, 0, 0, w, h);
+    g.save(); g.imageSmoothingEnabled = false; g.drawImage(sm, 0, 0, w, h, 0, 0, w * size, h * size); g.restore();
+  });
+  defTrans('burn', 'Film burn', 'FX', (g, A, B, p, W, H) => {
+    put(g, A, W, H); put(g, B, W, H, { a: sstep(0.35, 0.65, p) });
+    const q = peak(p);
+    if (q <= 0) return;
+    const cx = W * (-0.2 + 1.4 * p), cy = H * (0.35 + 0.2 * Math.sin(p * 5)), r = Math.max(W, H) * (0.5 + 0.6 * q);
+    const gr = g.createRadialGradient(cx, cy, 0, cx, cy, r);
+    gr.addColorStop(0, 'rgba(255,240,200,1)'); gr.addColorStop(0.25, 'rgba(255,150,40,.95)');
+    gr.addColorStop(0.55, 'rgba(255,40,90,.6)'); gr.addColorStop(1, 'rgba(255,40,90,0)');
+    g.save(); g.globalCompositeOperation = 'screen'; g.globalAlpha = Math.min(1, q * 1.3);
+    g.fillStyle = gr; g.fillRect(0, 0, W, H); g.restore();
+  });
+
+  /** The clip that starts exactly where c ends on the same track, if any. */
+  function touchingNext(track, c) {
+    const end = clipEnd(c);
+    let best = null;
+    for (const x of track.clips) if (x !== c && Math.abs(x.start - end) < TOUCH && (!best || x.start < best.start)) best = x;
+    return best;
+  }
+  /** Every transition that can actually play: {a, b, track, cut, d (seconds, centred on the cut), type}. */
+  function activeTransitions() {
+    const out = [];
+    for (const tr of tracks()) {
+      if (tr.kind !== 'visual') continue;
+      for (const a of tr.clips) {
+        if (!a.trans || !TRANSITIONS[a.trans.type]) continue;
+        const b = touchingNext(tr, a);
+        if (!b) continue;
+        // never longer than either clip, so two transitions on one clip can't overlap
+        const d = Math.min(a.trans.dur || TRANS_DEFAULT_DUR, a.duration, b.duration);
+        if (d >= 0.05) out.push({ a, b, track: tr, cut: clipEnd(a), d, type: a.trans.type });
+      }
+    }
+    return out;
+  }
+  const transLayers = [];
+  function transLayer(i) {
+    let L = transLayers[i];
+    if (!L) L = transLayers[i] = document.createElement('canvas');
+    if (L.width !== canvas.width || L.height !== canvas.height) { L.width = canvas.width; L.height = canvas.height; }
+    return L;
+  }
+  function paintLayer(L, c, t, solid) {
+    const g = L.getContext('2d');
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.globalAlpha = 1; g.filter = 'none'; g.globalCompositeOperation = 'source-over';
+    if (solid) { g.fillStyle = state.project.bg; g.fillRect(0, 0, L.width, L.height); }
+    else g.clearRect(0, 0, L.width, L.height);
+    const main = ctx;
+    ctx = g;
+    try { drawClip(c, t); } finally { ctx = main; }
+  }
+  function drawTransition(T, t, solid) {
+    const p = clamp((t - (T.cut - T.d / 2)) / T.d, 0, 1);
+    const A = transLayer(0), B = transLayer(1);
+    paintLayer(A, T.a, t, solid);
+    paintLayer(B, T.b, t, solid);
+    tmpTag = 'm';
+    ctx.save();
+    TRANSITIONS[T.type].draw(ctx, A, B, p, canvas.width, canvas.height);
+    ctx.restore();
   }
 
   function drawOverlay(t) {
@@ -1191,6 +1512,26 @@
       );
       const lane = el('div', { class: 'lane', style: `width:${laneW}px` });
       for (const c of tr.clips) lane.append(clipEl(c));
+      if (tr.kind === 'visual' && !tr.captions) {
+        // a ＋ button on every cut between two touching clips → transitions
+        const sorted = [...tr.clips].sort((x, y) => x.start - y.start);
+        for (let i = 0; i < sorted.length - 1; i++) {
+          const a = sorted[i], b = sorted[i + 1];
+          if (Math.abs(b.start - clipEnd(a)) >= TOUCH) continue;
+          const tt = a.trans && TRANSITIONS[a.trans.type];
+          const cutX = clipEnd(a) * state.pps;
+          if (tt) {
+            const d = Math.min(a.trans.dur || TRANS_DEFAULT_DUR, a.duration, b.duration);
+            lane.append(el('div', { class: 'twin', style: `left:${cutX - (d * state.pps) / 2}px;width:${d * state.pps}px` }));
+          }
+          lane.append(el('button', {
+            type: 'button', class: 'tjoin' + (tt ? ' has' : '') + (state.selectedTrans === a.id ? ' sel' : ''),
+            'data-a': a.id, style: `left:${cutX}px`,
+            title: tt ? `Transition: ${tt.label} (click to change)` : 'Add a transition',
+            'aria-label': tt ? `Transition: ${tt.label}` : 'Add a transition',
+          }, tt ? '⧓' : '+'));
+        }
+      }
       const row = el('div', { class: `track-row ${tr.kind}${isMain ? ' main' : ''}${tr.hidden ? ' hidden-track' : ''}`, 'data-track': tr.id }, headEl, lane);
       holder.append(row);
     }
@@ -1279,6 +1620,8 @@
   tlScroll.addEventListener('pointerdown', (ev) => {
     if (ev.button !== 0 || state.exporting) return;
     if (ev.target.closest('.track-head')) return;
+    const join = ev.target.closest('.tjoin');
+    if (join) { ev.preventDefault(); selectTransition(join.dataset.a); return; }
     const clipNode = ev.target.closest('.clip');
     const additive = ev.shiftKey || ev.ctrlKey || ev.metaKey || state.multiMode;
     if (clipNode) {
@@ -1586,6 +1929,9 @@
     }
   }
   function setSelection(ids, primary = null) {
+    const hadTrans = state.selectedTrans != null;
+    state.selectedTrans = null;
+    if (hadTrans) for (const n of $$('.tjoin.sel')) n.classList.remove('sel');
     const next = new Set(ids.filter(id => findClip(id)));
     const prim = primary != null && next.has(primary) ? primary
       : next.has(state.selectedId) ? state.selectedId : ([...next].pop() || null);
@@ -1593,7 +1939,15 @@
     state.selectedIds = next;
     state.selectedId = prim;
     for (const n of $$('.clip')) n.classList.toggle('selected', next.has(n.dataset.clip));
-    if (!same) renderInspector();
+    if (!same || hadTrans) renderInspector();
+    requestRender();
+  }
+  /** Select the cut after clip aId (between it and the touching next clip). */
+  function selectTransition(aId) {
+    setSelection([]);
+    state.selectedTrans = aId;
+    for (const n of $$('.tjoin')) n.classList.toggle('sel', n.dataset.a === aId);
+    renderInspector();
     requestRender();
   }
   function selectAll() {
@@ -1812,9 +2166,139 @@
     ));
   }
 
+  function transInfo(aId) {
+    const f = aId && findClip(aId);
+    if (!f || f.track.kind !== 'visual') return null;
+    const b = touchingNext(f.track, f.clip);
+    return b ? { a: f.clip, b, track: f.track } : null;
+  }
+  function previewTransition(a, b) {
+    const d = Math.min((a.trans && a.trans.dur) || TRANS_DEFAULT_DUR, a.duration, b.duration);
+    const cut = clipEnd(a);
+    previewRange(Math.max(a.start, cut - d / 2 - 0.5), Math.min(clipEnd(b) - 0.02, cut + d / 2 + 0.5));
+  }
+  function setTransition(a, type, dur) {
+    a.trans = type === 'none' ? null : { type, dur: dur != null ? dur : (a.trans ? a.trans.dur : TRANS_DEFAULT_DUR) };
+  }
+
+  // little sample frames for the picker: the real clips' thumbnails when there are any
+  function sampleFrame(c, W, H, fallback) {
+    const cv = el('canvas', { width: W, height: H });
+    const g = cv.getContext('2d');
+    const paint = (img) => {
+      const gr = g.createLinearGradient(0, 0, W, H);
+      gr.addColorStop(0, fallback[0]); gr.addColorStop(1, fallback[1]);
+      g.fillStyle = gr; g.fillRect(0, 0, W, H);
+      if (img) {
+        const k = Math.max(W / img.width, H / img.height);
+        g.drawImage(img, (W - img.width * k) / 2, (H - img.height * k) / 2, img.width * k, img.height * k);
+      } else {
+        g.fillStyle = '#ffffffdd'; g.font = `800 ${Math.round(H * 0.45)}px system-ui, sans-serif`;
+        g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText(fallback[2], W / 2, H / 2);
+      }
+    };
+    paint(null);
+    const m = c && c.mediaId ? state.media.get(c.mediaId) : null;
+    if (m && m.thumb && (c.type === 'video' || c.type === 'image')) {
+      const img = new Image();
+      img.onload = () => paint(img);
+      img.src = m.thumb;
+    }
+    return cv;
+  }
+  let thumbRaf = 0;
+  function animateTransitionTiles(tiles, A, B) {
+    cancelAnimationFrame(thumbRaf);
+    const loop = (now) => {
+      if (!tiles.length || !tiles[0].canvas.isConnected) return;
+      if (!state.exporting) {
+        const cyc = (now / 1000) % 1.9;                 // hold A, transition, hold B
+        const p = clamp((cyc - 0.35) / 1.1, 0, 1);
+        tmpTag = 't';
+        for (const { canvas: cv, type } of tiles) {
+          const g = cv.getContext('2d');
+          g.setTransform(1, 0, 0, 1, 0, 0);
+          g.globalAlpha = 1; g.globalCompositeOperation = 'source-over'; g.filter = 'none';
+          g.fillStyle = '#000'; g.fillRect(0, 0, cv.width, cv.height);
+          (type === 'none' ? cutTo : TRANSITIONS[type].draw)(g, A, B, p, cv.width, cv.height);
+        }
+      }
+      thumbRaf = requestAnimationFrame(loop);
+    };
+    thumbRaf = requestAnimationFrame(loop);
+  }
+
+  function renderTransitionInspector({ a, b, track }) {
+    const cur = a.trans && TRANSITIONS[a.trans.type] ? a.trans.type : 'none';
+    const name = (c) => (c.type === 'text' ? `“${String(c.text).split('\n')[0].slice(0, 16)}”` : ((state.media.get(c.mediaId) || {}).name || c.type));
+    const scroller = insp.closest('.panel') || insp;
+    const rerender = () => { const y = scroller.scrollTop; renderInspector(); scroller.scrollTop = y; };
+    const choose = (type) => {
+      setTransition(a, type);
+      commit();
+      rerender();
+      if (type !== 'none') previewTransition(a, b);
+    };
+    const pairs = () => {
+      const sorted = [...track.clips].sort((x, y) => x.start - y.start);
+      const out = [];
+      for (let i = 0; i < sorted.length - 1; i++) if (Math.abs(sorted[i + 1].start - clipEnd(sorted[i])) < TOUCH) out.push(sorted[i]);
+      return out;
+    };
+    const head = section('⧓ Transition',
+      el('p', { class: 'muted small', style: 'margin:0 0 8px' }, `${name(a)} → ${name(b)} · cut at ${fmt(clipEnd(a))}`),
+      el('div', { class: 'row' },
+        el('button', { type: 'button', disabled: cur === 'none', onclick: () => previewTransition(a, b) }, '▶ Preview'),
+        el('button', { type: 'button', title: 'Pick a random transition', onclick: () => {
+          const ids = Object.keys(TRANSITIONS).filter(k => k !== cur);
+          choose(ids[Math.floor(Math.random() * ids.length)]);
+        } }, '🎲 Random'),
+        el('button', { type: 'button', disabled: cur === 'none', title: 'Use this transition on every cut on this track', onclick: () => {
+          const list = pairs();
+          for (const x of list) setTransition(x, cur, a.trans.dur);
+          commit();
+          rerender();
+          toast(`${TRANSITIONS[cur].label} on all ${list.length} cut${list.length === 1 ? '' : 's'} ✨`);
+        } }, '⧉ Apply to all'),
+        el('button', { type: 'button', disabled: cur === 'none', onclick: () => choose('none') }, '✕ Remove'),
+      ));
+    if (cur !== 'none') {
+      const lim = Math.min(a.duration, b.duration);
+      const note = el('p', { class: 'muted small', style: 'margin:4px 0 0' });
+      const updNote = () => { note.textContent = a.trans && a.trans.dur > lim + 1e-6 ? `Plays as ${lim.toFixed(2)}s: a clip here is only that long.` : ''; };
+      head.append(slider('Length', () => (a.trans ? a.trans.dur : TRANS_DEFAULT_DUR), (v) => { if (a.trans) a.trans.dur = v; updNote(); }, 0.1, 2, 0.05, (v) => v.toFixed(2) + 's', { reset: TRANS_DEFAULT_DUR, timeline: true }), note);
+      updNote();
+    }
+    insp.append(head);
+
+    const TW = 120, TH = 80;
+    const A = sampleFrame(a, TW, TH, ['#7c3aed', '#db2777', 'A']), B = sampleFrame(b, TW, TH, ['#0891b2', '#16a34a', 'B']);
+    const tiles = [];
+    const tile = (type, label) => {
+      const cv = el('canvas', { width: TW, height: TH });
+      tiles.push({ canvas: cv, type });
+      return el('button', { type: 'button', class: 'tr-tile' + (cur === type ? ' on' : ''), 'data-trans': type, 'aria-pressed': String(cur === type), title: label, onclick: () => choose(type) },
+        cv, el('span', {}, label));
+    };
+    const pick = section('Pick one');
+    for (const cat of TRANS_CATS) {
+      const items = Object.values(TRANSITIONS).filter(x => x.cat === cat);
+      pick.append(el('div', { class: 'tr-cat' }, cat),
+        el('div', { class: 'tr-grid' }, cat === 'Basics' ? tile('none', 'None (cut)') : null, items.map(x => tile(x.id, x.label))));
+    }
+    insp.append(pick);
+    animateTransitionTiles(tiles, A, B);
+  }
+
   function renderInspector() {
     liveBindings = [];
     insp.innerHTML = '';
+    if (state.selectedTrans) {
+      const info = transInfo(state.selectedTrans);
+      if (info) { renderTransitionInspector(info); return; }
+      state.selectedTrans = null;
+    }
     if (state.selectedIds.size > 1) { renderMultiInspector(selectedAll()); return; }
     const sel = selected();
     if (!sel) { insp.append(emptyInspector()); return; }
@@ -1829,6 +2313,13 @@
         el('button', { onclick: duplicateSelected }, '⧉ Copy'),
         el('button', { onclick: deleteSelected }, '🗑 Delete'),
       )));
+    const nextClip = isVisual(c) && !track.captions ? touchingNext(track, c) : null;
+    if (nextClip) {
+      const tt = c.trans && TRANSITIONS[c.trans.type];
+      insp.append(el('div', { class: 'insp-section' },
+        el('button', { type: 'button', class: 'trans-link', onclick: () => selectTransition(c.id) },
+          `⧓ Transition to next clip: ${tt ? tt.label : 'none'}`)));
+    }
 
     if (c.caption) {
       const count = allClips().filter(x => x.caption).length;
@@ -2516,5 +3007,6 @@
   window.GhostCut = {
     state, importFiles, addMediaToTimeline, addText, splitAt, seek, play, pause, startExport, undo, redo, projectDuration,
     select, setSelection, selectAll, valAt, animFx, commit,
+    selectTransition, activeTransitions, transitionTypes: () => Object.keys(TRANSITIONS),
   };
 })();
