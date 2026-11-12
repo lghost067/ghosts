@@ -169,6 +169,8 @@
     history.idx = i;
     state.project = JSON.parse(history.stack[i]);
     if (state.selectedId && !findClip(state.selectedId)) state.selectedId = null;
+    for (const c of allClips()) { const m = state.media.get(c.mediaId); if (m) m.removed = false; }
+    renderMediaGrid();
     syncTopbar();
     afterChange(true);
   }
@@ -275,15 +277,15 @@
   }
 
   function removeMedia(id) {
+    // No confirm() dialog (it's blocked in sandboxed pages): remove, and let undo bring it back.
     const used = allClips().filter(c => c.mediaId === id).length;
-    if (used && !confirm(`This file is used by ${used} clip(s) on the timeline. Remove them too?`)) return;
     for (const tr of tracks()) tr.clips = tr.clips.filter(c => c.mediaId !== id);
     const m = state.media.get(id);
-    if (m) URL.revokeObjectURL(m.url);
-    state.media.delete(id);
+    if (m) m.removed = true;
     if (state.selectedId && !findClip(state.selectedId)) select(null);
     renderMediaGrid();
     commit();
+    toast(used ? `Removed file + ${used} clip${used > 1 ? 's' : ''} · Ctrl+Z to undo` : 'Removed file · Ctrl+Z to undo');
   }
 
   // ------------------------------------------------------------------
@@ -832,14 +834,42 @@
       seek(0);
       if (!ex || ex.cancelled) { toast('Export cancelled'); return; }
       const blob = new Blob(ex.chunks, { type: rec.mimeType || 'video/' + ex.ext });
-      const url = URL.createObjectURL(blob);
-      const a = el('a', { href: url, download: `ghostcut-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.${ex.ext}` });
-      document.body.append(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
-      toast(`Exported! ${(blob.size / 1e6).toFixed(1)} MB — no watermark, no fee 😌`, 4500);
+      lastExport = { blob, filename: `ghostcut-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.${ex.ext}` };
+      $('#resaveBtn').classList.remove('hidden');
+      saveExport();
     };
     rec.start(250);
     play();
+  }
+
+  // Saving: inside a claude.ai artifact, plain downloads are blocked, so use the
+  // page's `downloads` capability there. Everywhere else, a normal <a download>.
+  let lastExport = null;
+  async function saveExport() {
+    if (!lastExport) return;
+    const { blob, filename } = lastExport;
+    const mb = (blob.size / 1e6).toFixed(1);
+    let dl = null;
+    if (window.claude && typeof window.claude.use === 'function') {
+      try { dl = await window.claude.use('downloads'); } catch { dl = null; }
+    }
+    if (dl) {
+      try {
+        await dl.save({ filename, data: blob });
+        toast(`Saved ${filename} (${mb} MB). No watermark, no fee 😌`, 4500);
+      } catch (err) {
+        const code = err && err.code;
+        if (code === 'declined') toast('Save cancelled. Hit “Save again” up top whenever you’re ready.', 4500);
+        else if (code === 'rate_limited') toast('A save prompt is already open. Finish that one first.', 4500);
+        else toast('This view can’t save files. Open the page in a browser tab and try “Save again”.', 5000);
+      }
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = el('a', { href: url, download: filename });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    toast(`Exported! ${mb} MB. No watermark, no fee 😌`, 4500);
   }
 
   function waitForFrames(t) {
@@ -1374,6 +1404,7 @@
     const grid = $('#mediaGrid');
     grid.innerHTML = '';
     for (const m of state.media.values()) {
+      if (m.removed) continue;
       if (m.loading) { grid.append(el('div', { class: 'media-item loading' }, 'loading…')); continue; }
       const item = el('div', {
         class: `media-item ${m.kind}`, draggable: 'true', title: m.name,
@@ -1436,6 +1467,7 @@
     $('#bgColor').addEventListener('input', (e) => { state.project.bg = e.target.value; requestRender(); });
     $('#bgColor').addEventListener('change', () => commit());
     $('#exportBtn').addEventListener('click', startExport);
+    $('#resaveBtn').addEventListener('click', saveExport);
     $('#cancelExportBtn').addEventListener('click', cancelExport);
     $('#playBtn').addEventListener('click', togglePlay);
     $('#toStartBtn').addEventListener('click', () => seek(0));
