@@ -336,7 +336,7 @@
     }
     if (mode === 'playhead') c.start = state.time;
     if (preferTrack && preferTrack.kind === kind && fits(preferTrack, c.start, c.duration)) { preferTrack.clips.push(c); return preferTrack; }
-    let candidates = tracks().filter(t => t.kind === kind);
+    let candidates = tracks().filter(t => t.kind === kind && !t.captions);
     if (kind === 'visual' && c.type !== 'text') candidates = candidates.reverse();
     let tr = candidates.find(t => fits(t, c.start, c.duration));
     if (!tr) tr = insertTrack(kind, c.type === 'text');
@@ -934,10 +934,14 @@
     const holder = $('#tracks');
     holder.innerHTML = '';
     const main = mainTrack();
-    let vi = tracks().filter(t => t.kind === 'visual').length, ai = 0;
+    const overlays = tracks().filter(t => t.kind === 'visual' && t !== main && !t.captions);
+    let ai = 0;
     for (const tr of tracks()) {
       const isMain = tr === main;
-      const name = tr.kind === 'audio' ? `🎵 Audio ${++ai}` : isMain ? '🎬 Main' : `▦ Overlay ${--vi}`;
+      const name = tr.kind === 'audio' ? `🎵 Audio ${++ai}`
+        : isMain ? '🎬 Main'
+        : tr.captions ? '💬 Captions'
+        : `▦ Overlay ${overlays.length - overlays.indexOf(tr)}`;
       const kindCount = tracks().filter(t => t.kind === tr.kind).length;
       const headEl = el('div', { class: 'track-head' },
         el('span', { class: 'tname', title: name }, name),
@@ -1301,6 +1305,16 @@
         el('button', { onclick: deleteSelected }, '🗑 Delete'),
       )));
 
+    if (c.caption) {
+      const count = allClips().filter(x => x.caption).length;
+      insp.append(section('Captions',
+        el('p', { class: 'muted small', style: 'margin:0 0 8px' }, `Style this one, then copy its look to all ${count} captions.`),
+        el('div', { class: 'row' },
+          el('button', { onclick: () => applyStyleToAllCaptions(c) }, '🎨 Apply style to all'),
+          el('button', { onclick: deleteAllCaptions }, '🗑 Delete all'),
+        )));
+    }
+
     if (c.type === 'text') {
       const ta = el('textarea', { rows: 3 }, c.text);
       ta.addEventListener('input', () => { c.text = ta.value; requestRender(); });
@@ -1395,6 +1409,419 @@
       el('p', {}, 'Import media on the left, hit ＋ to add it, then click a clip to edit it. Drag things around right on the preview.'),
       el('div', { class: 'kbd-list' }, keys.flatMap(([k, d]) => [el('kbd', {}, k), el('span', {}, d)])),
     );
+  }
+
+  // ------------------------------------------------------------------
+  // auto captions: Whisper speech-to-text, running in a Web Worker on
+  // the viewer's own device (transformers.js + ONNX Runtime / WebAssembly)
+  // ------------------------------------------------------------------
+  const TRANSFORMERS_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.2';
+  const CAPTION_MODELS = {
+    tiny: { en: 'onnx-community/whisper-tiny.en_timestamped', multi: 'onnx-community/whisper-tiny_timestamped' },
+    base: { en: 'onnx-community/whisper-base.en_timestamped', multi: 'onnx-community/whisper-base_timestamped' },
+  };
+  const CAPTION_LANGS = [
+    ['en', 'English'], ['auto', 'Auto-detect (any language)'],
+    ['arabic', 'Arabic'], ['chinese', 'Chinese'], ['dutch', 'Dutch'], ['french', 'French'], ['german', 'German'],
+    ['hindi', 'Hindi'], ['indonesian', 'Indonesian'], ['italian', 'Italian'], ['japanese', 'Japanese'],
+    ['korean', 'Korean'], ['polish', 'Polish'], ['portuguese', 'Portuguese'], ['russian', 'Russian'],
+    ['spanish', 'Spanish'], ['swahili', 'Swahili'], ['tagalog', 'Tagalog'], ['turkish', 'Turkish'],
+    ['ukrainian', 'Ukrainian'], ['vietnamese', 'Vietnamese'],
+  ];
+  const CAPTION_STYLES = {
+    classic: { label: 'Classic', t: { color: '#ffffff', stroke: '#000000', strokeW: 12, bg: '', bold: true, shadow: false, glow: false, font: FONTS[0][0], anim: 'none' } },
+    pop:     { label: 'Pop',     t: { color: '#ffd43b', stroke: '#000000', strokeW: 14, bg: '', bold: true, shadow: false, glow: false, font: FONTS[1][0], anim: 'pop' } },
+    boxed:   { label: 'Boxed',   t: { color: '#ffffff', stroke: '#000000', strokeW: 0, bg: '#000000b3', bold: true, shadow: false, glow: false, font: FONTS[0][0], anim: 'none' } },
+    clean:   { label: 'Clean',   t: { color: '#ffffff', stroke: '#000000', strokeW: 0, bg: '', bold: true, shadow: true, glow: false, font: FONTS[0][0], anim: 'fade' } },
+  };
+  const CAPTION_STYLE_KEYS = ['font', 'size', 'color', 'stroke', 'strokeW', 'bg', 'bold', 'italic', 'align', 'shadow', 'glow', 'anim', 'x', 'y', 'scale', 'rotation', 'opacity'];
+
+  // Runs inside the worker. Loads the model once and keeps it for the next run.
+  const CAPTION_WORKER_SRC = `
+    let asr = null, asrModel = null;
+    self.onmessage = async (e) => {
+      const { id, model, audio, language } = e.data;
+      try {
+        const { pipeline } = await import(${JSON.stringify(TRANSFORMERS_URL)});
+        if (asrModel !== model) {
+          if (asr && asr.dispose) { try { await asr.dispose(); } catch (_) {} }
+          asr = null; asrModel = null;
+          asr = await pipeline('automatic-speech-recognition', model, {
+            progress_callback: (p) => self.postMessage({ id, type: 'progress', p }),
+          });
+          asrModel = model;
+        }
+        self.postMessage({ id, type: 'loaded' });
+        const opts = { return_timestamps: 'word', chunk_length_s: 30, stride_length_s: 5 };
+        if (!model.includes('.en')) { opts.task = 'transcribe'; if (language) opts.language = language; }
+        const out = await asr(audio, opts);
+        self.postMessage({ id, type: 'result', chunks: out.chunks || [] });
+      } catch (err) {
+        self.postMessage({ id, type: 'error', message: String((err && err.message) || err) });
+      }
+    };`;
+
+  let capWorker = null, capJob = null, capBusy = false, capStopped = false;
+  const stoppedError = () => Object.assign(new Error('cancelled'), { cancelled: true });
+
+  function getCaptionWorker() {
+    if (!capWorker) {
+      const url = URL.createObjectURL(new Blob([CAPTION_WORKER_SRC], { type: 'text/javascript' }));
+      capWorker = new Worker(url, { type: 'module' });
+      capWorker.onmessage = (e) => { if (capJob) capJob.onMessage(e.data); };
+      capWorker.onerror = (e) => {
+        e.preventDefault();
+        if (capJob) capJob.onMessage({ id: capJob.id, type: 'error', message: e.message || 'The caption worker crashed' });
+      };
+    }
+    return capWorker;
+  }
+
+  function transcribe(audio, model, language, onProgress) {
+    return new Promise((resolve, reject) => {
+      const id = uid();
+      capJob = {
+        id, reject,
+        onMessage(d) {
+          if (d.id !== id) return;
+          if (d.type === 'progress' || d.type === 'loaded') onProgress(d);
+          else if (d.type === 'result') { capJob = null; resolve(d.chunks); }
+          else if (d.type === 'error') { capJob = null; reject(new Error(d.message)); }
+        },
+      };
+      getCaptionWorker().postMessage({ id, model, audio, language }, [audio.buffer]);
+    });
+  }
+
+  function cancelTranscription() {
+    if (capWorker) { capWorker.terminate(); capWorker = null; }
+    if (capJob) {
+      const job = capJob;
+      capJob = null;
+      job.reject(stoppedError());
+    }
+  }
+
+  /** Decode a media file's audio to 16 kHz mono, the format Whisper expects. */
+  async function decodePcm16k(m) {
+    const buf = await (await fetch(m.url)).arrayBuffer();
+    const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    const ab = await new OAC(1, 1, 16000).decodeAudioData(buf);   // resamples to 16 kHz
+    const n = ab.numberOfChannels;
+    if (n === 1) return ab.getChannelData(0);
+    const out = new Float32Array(ab.length);
+    for (let ch = 0; ch < n; ch++) {
+      const d = ab.getChannelData(ch);
+      for (let i = 0; i < d.length; i++) out[i] += d[i];
+    }
+    for (let i = 0; i < out.length; i++) out[i] /= n;
+    return out;
+  }
+
+  /** Whisper word chunks (seconds into the slice) -> timeline words, minus [Music]-style tags. */
+  function captionWords(chunks, c) {
+    const words = [];
+    let depth = 0;
+    const end = clipEnd(c);
+    for (const ch of chunks) {
+      const raw = String(ch.text || '').trim();
+      const opens = (raw.match(/[[(]/g) || []).length;
+      const closes = (raw.match(/[\])]/g) || []).length;
+      const insideTag = depth > 0 || opens > 0;
+      depth = Math.max(0, depth + opens - closes);
+      const text = raw.replace(/[[\]()]/g, '').trim();
+      if (insideTag || !text || /[♪♫]/.test(text)) continue;
+      const ts = ch.timestamp || [];
+      const a = ts[0];
+      if (a == null || !isFinite(a)) continue;
+      let b = ts[1];
+      if (b == null || !isFinite(b) || b < a) b = a + 0.3;
+      const s = c.start + a / c.speed;
+      if (s >= end - 0.05) continue;
+      words.push({ text, start: Math.max(c.start, s), end: Math.min(end, Math.max(c.start + b / c.speed, s + 0.08)) });
+    }
+    return words;
+  }
+
+  /** Group words into short captions: break on word count, pauses and sentence ends. */
+  function groupCaptionWords(words, maxWords, clipEndT) {
+    const groups = [];
+    let cur = [];
+    for (const w of words) {
+      const prev = cur[cur.length - 1];
+      if (prev && (cur.length >= maxWords || w.start - prev.end > 0.7 || /[.!?]$/.test(prev.text))) {
+        groups.push(cur);
+        cur = [];
+      }
+      cur.push(w);
+    }
+    if (cur.length) groups.push(cur);
+    return groups.map((g, i) => {
+      const start = g[0].start;
+      const next = groups[i + 1];
+      const lastEnd = g[g.length - 1].end;
+      // hold each caption until the next one starts, unless there's a real pause
+      let end = next && next[0].start - lastEnd < 0.7 ? next[0].start : lastEnd + 0.25;
+      if (next) end = Math.min(end, next[0].start);
+      end = Math.min(end, clipEndT);
+      if (end - start < 0.2) end = Math.min(clipEndT, start + 0.2);
+      return { words: g.map(w => w.text), start, end };
+    }).filter(g => g.end - g.start >= 0.05);
+  }
+
+  function captionText(words, textCase) {
+    let s = words.join(' ').replace(/\s+([,.!?;:])/g, '$1').replace(/[,.;:]+$/, '');
+    if (textCase === 'upper') s = s.toUpperCase();
+    else if (textCase === 'lower') s = s.toLowerCase();
+    return s;
+  }
+
+  /** Break a caption onto extra lines when it would run off the side of the frame. */
+  function wrapCaption(c) {
+    const size = c.size * shortSide() / 1080;
+    ctx.save();
+    ctx.font = textFont(c, size);
+    const maxW = (canvas.width * 0.86) / c.scale - (c.bg ? size * 0.7 : 0);
+    const lines = [];
+    let line = '';
+    for (const word of c.text.split(' ')) {
+      const test = line ? line + ' ' + word : word;
+      if (line && ctx.measureText(test).width > maxW) { lines.push(line); line = word; }
+      else line = test;
+    }
+    if (line) lines.push(line);
+    ctx.restore();
+    c.text = lines.join('\n');
+  }
+
+  const captionTracks = () => tracks().filter(t => t.captions);
+  function removeAllCaptions() {
+    for (const tr of tracks()) tr.clips = tr.clips.filter(c => !c.caption);
+    state.project.tracks = tracks().filter(t => !(t.captions && !t.clips.length));
+  }
+  function addCaptionClip(c) {
+    for (const tr of captionTracks()) if (fits(tr, c.start, c.duration)) { tr.clips.push(c); return; }
+    const tr = newTrack('visual');
+    tr.captions = true;
+    tracks().unshift(tr);
+    tr.clips.push(c);
+  }
+
+  function applyStyleToAllCaptions(src) {
+    let n = 0;
+    for (const c of allClips()) {
+      if (!c.caption || c === src) continue;
+      for (const k of CAPTION_STYLE_KEYS) c[k] = src[k];
+      n++;
+    }
+    commit();
+    toast(n ? `Copied this style to ${n} other caption${n > 1 ? 's' : ''}` : 'This is the only caption');
+  }
+  function deleteAllCaptions() {
+    const n = allClips().filter(c => c.caption).length;
+    removeAllCaptions();
+    select(null);
+    commit();
+    toast(`Deleted ${n} caption${n === 1 ? '' : 's'} · Ctrl+Z to undo`);
+  }
+
+  // ---- caption settings (remembered per browser) ----
+  const capPrefs = { lang: 'en', model: 'tiny', words: 3, style: 'classic', textCase: 'none' };
+  try { Object.assign(capPrefs, JSON.parse(localStorage.getItem('ghostcut.captions') || '{}')); } catch { /* storage unavailable */ }
+  if (!CAPTION_STYLES[capPrefs.style]) capPrefs.style = 'classic';
+  if (!CAPTION_MODELS[capPrefs.model]) capPrefs.model = 'tiny';
+  if (!CAPTION_LANGS.some(([v]) => v === capPrefs.lang)) capPrefs.lang = 'en';
+  capPrefs.words = clamp(Math.round(+capPrefs.words) || 3, 1, 6);
+  const saveCapPrefs = () => { try { localStorage.setItem('ghostcut.captions', JSON.stringify(capPrefs)); } catch { /* ignore */ } };
+
+  function buildCaptionModal() {
+    $('#capLang').append(...CAPTION_LANGS.map(([v, l]) => el('option', { value: v }, l)));
+    const styles = $('#capStyles');
+    for (const [key, s] of Object.entries(CAPTION_STYLES)) {
+      const t = s.t;
+      const css = [
+        `font:800 14px ${t.font}`, `color:${t.color}`,
+        t.strokeW ? `-webkit-text-stroke:3px ${t.stroke};paint-order:stroke fill` : '',
+        t.bg ? `background:${t.bg};padding:2px 6px;border-radius:4px` : '',
+        t.shadow ? 'text-shadow:0 2px 4px #000' : '',
+      ].join(';');
+      const b = el('button', { type: 'button', 'data-style': key, title: s.label }, el('span', { style: css }, s.label));
+      b.addEventListener('click', () => { capPrefs.style = key; syncCapForm(); });
+      styles.append(b);
+    }
+    $('#capLang').addEventListener('change', (e) => { capPrefs.lang = e.target.value; });
+    $('#capModel').addEventListener('change', (e) => { capPrefs.model = e.target.value; });
+    $('#capCase').addEventListener('change', (e) => { capPrefs.textCase = e.target.value; });
+    $('#capWords').addEventListener('input', (e) => { capPrefs.words = +e.target.value; $('#capWordsVal').textContent = capPrefs.words; });
+    $('#capGo').addEventListener('click', runCaptions);
+    $('#capCancel').addEventListener('click', () => {
+      if (capBusy) { capStopped = true; cancelTranscription(); } else closeCaptionModal();
+    });
+    $('#autoCapBtn').addEventListener('click', openCaptionModal);
+  }
+
+  function syncCapForm() {
+    $('#capLang').value = capPrefs.lang;
+    $('#capModel').value = capPrefs.model;
+    $('#capCase').value = capPrefs.textCase;
+    $('#capWords').value = capPrefs.words;
+    $('#capWordsVal').textContent = capPrefs.words;
+    $$('#capStyles button').forEach(b => b.classList.toggle('on', b.dataset.style === capPrefs.style));
+  }
+
+  function openCaptionModal() {
+    if (state.exporting) return;
+    pause();
+    const list = $('#capSources');
+    list.innerHTML = '';
+    const sources = allClips().filter(c => (c.type === 'video' || c.type === 'audio') && state.media.get(c.mediaId))
+      .sort((a, b) => a.start - b.start);
+    const hasVideo = sources.some(c => c.type === 'video');
+    for (const c of sources) {
+      const m = state.media.get(c.mediaId);
+      const box = el('input', { type: 'checkbox', value: c.id });
+      // music files usually shouldn't be captioned, so audio clips start unticked when there's video
+      box.checked = c.type === 'video' || !hasVideo;
+      list.append(el('label', {}, box, el('span', { title: m.name }, `${c.type === 'video' ? '🎬' : '🎵'} ${m.name}`),
+        el('em', {}, `${fmt(c.start, false)}–${fmt(clipEnd(c), false)}`)));
+    }
+    if (!sources.length) list.append(el('p', { class: 'muted small', style: 'margin:0' }, 'Add a video or audio clip with someone talking first.'));
+    $('#capGo').disabled = !sources.length;
+    $('#capReplaceRow').classList.toggle('hidden', !allClips().some(c => c.caption));
+    $('#capReplace').checked = true;
+    syncCapForm();
+    setCapBusy(false);
+    capErrorMsg('');
+    $('#captionModal').classList.remove('hidden');
+  }
+  function closeCaptionModal() { $('#captionModal').classList.add('hidden'); }
+
+  let capTimer = 0;
+  function setCapBusy(busy) {
+    capBusy = busy;
+    $('#capForm').classList.toggle('hidden', busy);
+    $('#capProgress').classList.toggle('hidden', !busy);
+    $('#capGo').classList.toggle('hidden', busy);
+    $('#capCancel').textContent = busy ? 'Stop' : 'Cancel';
+    if (!busy) clearInterval(capTimer);
+  }
+  function capProgress(status, pct, detail = '') {
+    $('#capStatus').textContent = status;
+    const indeterminate = pct == null;
+    $('#capBarWrap').classList.toggle('indeterminate', indeterminate);
+    $('#capBar').style.width = indeterminate ? '' : `${clamp(pct, 0, 100)}%`;
+    $('#capDetail').textContent = detail;
+  }
+  function capErrorMsg(msg) {
+    $('#capError').textContent = msg;
+    $('#capError').classList.toggle('hidden', !msg);
+  }
+  function friendlyCaptionError(err) {
+    const msg = String((err && err.message) || err);
+    if (/fetch|network|import|load|module|404|ERR_/i.test(msg)) {
+      return 'Couldn’t download the caption AI. Check your internet connection and try again. (After the first download it works offline.)';
+    }
+    if (/memory|allocation|OOM/i.test(msg)) return 'Your device ran out of memory. Try the Fast model, or caption shorter clips.';
+    return `Captioning failed: ${msg}`;
+  }
+
+  async function runCaptions() {
+    // snapshot the chosen clips so later edits can't shift them mid-run
+    const sources = $$('#capSources input:checked').map(i => findClip(i.value)).filter(Boolean).map(f => ({ ...f.clip }));
+    if (!sources.length) { capErrorMsg('Tick at least one clip to caption.'); return; }
+    saveCapPrefs();
+    capErrorMsg('');
+    const prefs = { ...capPrefs };
+    const replace = !$('#capReplaceRow').classList.contains('hidden') && $('#capReplace').checked;
+    const model = CAPTION_MODELS[prefs.model][prefs.lang === 'en' ? 'en' : 'multi'];
+    const language = prefs.lang === 'en' || prefs.lang === 'auto' ? null : prefs.lang;
+    const style = CAPTION_STYLES[prefs.style].t;
+    const tall = canvas.height > canvas.width;
+
+    setCapBusy(true);
+    capStopped = false;
+    const pcmCache = new Map();
+    const made = [];
+    const skipped = [];
+    const files = {};
+    try {
+      for (let i = 0; i < sources.length; i++) {
+        const c = sources[i];
+        const m = state.media.get(c.mediaId);
+        const label = sources.length > 1 ? ` (clip ${i + 1} of ${sources.length})` : '';
+        capProgress(`Reading audio${label}…`, null, m.name);
+        let pcm = pcmCache.get(m.id);
+        if (!pcm) {
+          try { pcm = await decodePcm16k(m); } catch { if (capStopped) throw stoppedError(); skipped.push(m.name); continue; }
+          pcmCache.set(m.id, pcm);
+        }
+        if (capStopped) throw stoppedError();
+        const a = Math.max(0, Math.floor(c.in * 16000));
+        const b = Math.min(pcm.length, Math.ceil((c.in + c.duration * c.speed) * 16000));
+        if (b - a < 16000 * 0.3) continue;
+        const slice = pcm.slice(a, b);
+
+        const t0 = performance.now();
+        const listening = () => capProgress(`Listening${label}…`, null, `${m.name} · ${Math.round((performance.now() - t0) / 1000)}s`);
+        const chunks = await transcribe(slice, model, language, (d) => {
+          if (d.type === 'loaded') {
+            listening();
+            clearInterval(capTimer);
+            capTimer = setInterval(listening, 1000);
+            return;
+          }
+          const p = d.p || {};
+          if (p.status === 'progress' && p.file && p.total) {
+            files[p.file] = { loaded: p.loaded || 0, total: p.total };
+            let loaded = 0, total = 0;
+            for (const f of Object.values(files)) { loaded += f.loaded; total += f.total; }
+            if (total > 1e6) {
+              capProgress('Downloading caption AI (first time only)…', (loaded / total) * 100,
+                `${(loaded / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB`);
+            }
+          } else if (p.status === 'initiate' || p.status === 'download') {
+            if (!Object.keys(files).length) capProgress('Loading caption AI…', null, '');
+          }
+        });
+        clearInterval(capTimer);
+
+        const words = captionWords(chunks, c);
+        for (const g of groupCaptionWords(words, prefs.words, clipEnd(c))) {
+          const cap = textClip({
+            ...style,
+            text: captionText(g.words, prefs.textCase),
+            size: tall ? 64 : 58,
+            y: tall ? 0.7 : 0.84,
+            caption: true,
+          });
+          cap.start = g.start;
+          cap.duration = g.end - g.start;
+          wrapCaption(cap);
+          made.push(cap);
+        }
+      }
+    } catch (err) {
+      clearInterval(capTimer);
+      setCapBusy(false);
+      if (err && err.cancelled) { capErrorMsg('Stopped. Nothing was added.'); return; }
+      console.error(err);
+      capErrorMsg(friendlyCaptionError(err));
+      return;
+    }
+    setCapBusy(false);
+    if (!made.length) {
+      capErrorMsg(skipped.length
+        ? `Couldn’t read the audio in ${skipped.join(', ')}. Your browser may not support that file’s sound format.`
+        : 'Didn’t hear any speech in the selected clips.');
+      return;
+    }
+    if (replace) removeAllCaptions();
+    for (const cap of made) addCaptionClip(cap);
+    select(null);
+    commit();
+    closeCaptionModal();
+    toast(`Added ${made.length} captions ✨ Click one to edit it, or restyle them all at once`, 4500);
+    if (skipped.length) toast(`Skipped ${skipped.join(', ')}: couldn’t read its audio`, 5000);
   }
 
   // ------------------------------------------------------------------
@@ -1497,6 +1924,10 @@
       const tag = (e.target.tagName || '').toLowerCase();
       if (tag === 'textarea' || (tag === 'input' && !['range', 'checkbox', 'color'].includes(e.target.type)) || tag === 'select') return;
       if (state.exporting) return;
+      if (!$('#captionModal').classList.contains('hidden')) {
+        if (e.key === 'Escape' && !capBusy) closeCaptionModal();
+        return;
+      }
       const mod = e.ctrlKey || e.metaKey;
       const k = e.key;
       if (k === ' ') { e.preventDefault(); togglePlay(); }
@@ -1525,6 +1956,7 @@
   // boot
   // ------------------------------------------------------------------
   buildLeftPanels();
+  buildCaptionModal();
   wire();
   syncTopbar();
   renderMediaGrid();

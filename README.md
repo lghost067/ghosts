@@ -23,6 +23,10 @@ Want a public link? Turn on **GitHub Pages** for this repo (Settings → Pages �
 - **Edit**: drag to move, drag the edges to trim, split ✂, duplicate, delete, with snapping
 - **Text**: 8 presets (caption, title, boxed, neon, subtitle, typewriter, meme…), fonts, outline, box, shadow and glow
 - **Text animations**: fade, pop, slide up, typewriter
+- **Auto captions** ✨: an AI (Whisper) listens to your clips and writes timed captions, entirely on your device
+  - English, auto-detect or 20 other languages; Fast (41 MB) or Accurate (77 MB) model, downloaded once then cached
+  - 1–6 words per caption, 4 styles, text case, and one click to restyle or delete them all
+  - Handles trimmed and sped-up clips; captions are normal text clips you can edit
 - **Stickers**: a pile of emoji 💀🔥✨
 - **Filters**: Vivid, B&W, Vintage, Warm, Cool, Drama, Dreamy, plus manual brightness, contrast, saturation, hue, sepia and blur
 - **Transform**: drag and scale right on the preview (with centre snapping), plus rotation, opacity and fit/fill
@@ -51,5 +55,7 @@ Want a public link? Turn on **GitHub Pages** for this repo (Settings → Pages �
 - Export records in **real time**, so a 30 s video takes about 30 s. Keep the tab visible while it renders.
 - Filters need a browser with canvas filter support (Chrome, Edge, Firefox).
 - Projects aren't saved when you close the tab, so export before you leave.
+- Auto captions need internet the first time, to download the AI library and model. After that your browser caches them.
+- Auto captions don't work in the claude.ai-hosted copy (`dist/ghostcut.html`), because that sandbox blocks the model download. Use the GitHub Pages version.
 
 Built with plain HTML, CSS and JavaScript: canvas for compositing, Web Audio for mixing, and MediaRecorder for export. There are zero dependencies.

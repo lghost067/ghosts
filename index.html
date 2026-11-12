@@ -60,6 +60,10 @@
       </div>
 
       <div class="tab-body hidden" data-body="text">
+        <button class="autocap" id="autoCapBtn" type="button">
+          <span class="ac-icon">✨</span>
+          <span class="ac-text"><b>Auto captions</b><span class="muted small">Turn speech into timed captions</span></span>
+        </button>
         <div class="preset-grid" id="textPresets"></div>
       </div>
 
@@ -118,6 +122,54 @@
       <p class="small" id="exportPct">0%</p>
       <p class="muted small">Keep this tab open &amp; visible — export renders in real time.</p>
       <button id="cancelExportBtn">Cancel</button>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="captionModal" role="dialog" aria-modal="true" aria-labelledby="capTitle">
+    <div class="modal-card cap-card">
+      <h2 id="capTitle">✨ Auto captions</h2>
+      <p class="muted small">Speech-to-text runs on your device. The AI model downloads once, then your browser keeps it.</p>
+      <div id="capForm" class="cap-form">
+        <div class="cap-field">
+          <span class="cap-label">Clips to caption</span>
+          <div id="capSources" class="cap-sources"></div>
+        </div>
+        <div class="cap-grid">
+          <label class="cap-field"><span class="cap-label">Language</span><select id="capLang"></select></label>
+          <label class="cap-field"><span class="cap-label">Accuracy</span>
+            <select id="capModel">
+              <option value="tiny">Fast · 41 MB download</option>
+              <option value="base">Accurate · 77 MB download</option>
+            </select>
+          </label>
+        </div>
+        <p class="muted small cap-hint">Pick the language that's actually spoken. The wrong one gives gibberish. Not sure? Use Auto-detect.</p>
+        <label class="cap-field"><span class="cap-label">Words per caption: <b id="capWordsVal">3</b></span>
+          <input type="range" id="capWords" min="1" max="6" step="1" value="3">
+        </label>
+        <div class="cap-field">
+          <span class="cap-label">Style</span>
+          <div id="capStyles" class="cap-styles"></div>
+        </div>
+        <label class="cap-field"><span class="cap-label">Text case</span>
+          <select id="capCase">
+            <option value="none">As spoken</option>
+            <option value="upper">UPPERCASE</option>
+            <option value="lower">lowercase</option>
+          </select>
+        </label>
+        <label class="cap-check" id="capReplaceRow"><input type="checkbox" id="capReplace" checked> Replace the captions already on the timeline</label>
+      </div>
+      <div id="capProgress" class="cap-progress hidden">
+        <p id="capStatus">Starting…</p>
+        <div class="progress" id="capBarWrap"><div class="bar" id="capBar"></div></div>
+        <p class="muted small" id="capDetail"></p>
+      </div>
+      <p id="capError" class="cap-error hidden" role="alert"></p>
+      <div class="cap-actions">
+        <button id="capCancel" type="button">Cancel</button>
+        <button id="capGo" class="primary" type="button">Generate captions</button>
+      </div>
     </div>
   </div>
 
