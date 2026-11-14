@@ -6,7 +6,7 @@
   <title>GhostCut — free video editor</title>
   <meta name="description" content="A free, private, in-browser video editor. No uploads, no watermark, no subscription.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👻</text></svg>">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
   <header class="topbar">
@@ -46,6 +46,7 @@
         <button class="tab active" data-tab="media">🎞 Media</button>
         <button class="tab" data-tab="text">🔤 Text</button>
         <button class="tab" data-tab="stickers">✨ Stickers</button>
+        <button class="tab" data-tab="transitions">⧓ Transitions</button>
       </nav>
 
       <div class="tab-body" data-body="media">
@@ -69,6 +70,10 @@
 
       <div class="tab-body hidden" data-body="stickers">
         <div class="sticker-grid" id="stickerGrid"></div>
+      </div>
+
+      <div class="tab-body hidden" data-body="transitions">
+        <div id="transTab"></div>
       </div>
     </aside>
 
@@ -177,6 +182,6 @@
   <div class="toast-wrap" id="toasts"></div>
   <div id="mediaHolder" aria-hidden="true"></div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=7"></script>
 </body>
 </html>

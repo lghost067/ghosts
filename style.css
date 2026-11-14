@@ -98,7 +98,7 @@ input[type="range"] { accent-color: var(--accent); width: 100%; }
 .panel.right { border-left: 1px solid var(--line); padding: 12px; }
 
 .tabs { display: flex; gap: 4px; padding: 8px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); z-index: 2; }
-.tab { flex: 1; background: transparent; border-color: transparent; font-size: 12px; padding: 6px 4px; }
+.tab { flex: 1 1 auto; min-width: 0; background: transparent; border-color: transparent; font-size: 12px; padding: 6px 4px; white-space: nowrap; }
 .tab.active { background: var(--panel-2); border-color: var(--line); }
 .tab-body { padding: 10px; }
 
@@ -387,3 +387,6 @@ kbd { background: var(--panel-2); border: 1px solid var(--line); border-bottom-w
   .media-grid { grid-template-columns: repeat(3, 1fr); }
   :root { --head-w: 96px; }
 }
+
+.tr-howto { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.tr-howto button { margin-top: 6px; }

@@ -51,7 +51,8 @@ If you still get a 404 right after a deploy, your browser is showing an old copy
   - Tune every loop: tempo in **BPM** (type your song's BPM to move on the beat), plus strength, angle, distance or zoom
   - Rotate can spin either way, and Ken Burns can zoom in or out
   - Loops stay on the beat when you split or trim a clip
-- **Transitions** ⧓: 34 of them, on any cut between two touching clips (tap the ＋ on the cut)
+- **Transitions** ⧓: 34 of them, from the **⧓ Transitions** tab or the ＋ on any cut between two touching clips
+  - The tab adds to the selected cut, else the selected clip's cut, else the cut nearest the playhead, and can close gaps for you
   - Basics: fade, dip to black/white, flash, blur
   - Motion: push, slide and whip pan (with motion blur) in 4 directions
   - Camera: zoom in/out (zoom blur), spin, flip, shake

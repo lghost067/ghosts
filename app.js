@@ -228,6 +228,7 @@
     applyCanvasSize();
     renderTimeline();
     if (rebuildInspector) renderInspector();
+    renderTransTab();
     if (!state.playing) syncMedia(state.time, false);
     requestRender();
   }
@@ -1325,6 +1326,7 @@
     if (state.playing) clock = { wall: performance.now(), t: state.time };
     syncMedia(state.time, state.playing);
     updatePlayhead();
+    if (!state.playing) renderTransTab();     // "nearest cut" follows the playhead
     requestRender();
   }
 
@@ -1940,6 +1942,7 @@
     state.selectedId = prim;
     for (const n of $$('.clip')) n.classList.toggle('selected', next.has(n.dataset.clip));
     if (!same || hadTrans) renderInspector();
+    renderTransTab();
     requestRender();
   }
   /** Select the cut after clip aId (between it and the touching next clip). */
@@ -1948,6 +1951,7 @@
     state.selectedTrans = aId;
     for (const n of $$('.tjoin')) n.classList.toggle('sel', n.dataset.a === aId);
     renderInspector();
+    renderTransTab();
     requestRender();
   }
   function selectAll() {
@@ -2207,26 +2211,137 @@
     }
     return cv;
   }
+  // animated thumbnails: every visible picker grid shares one animation loop
+  const tileGroups = new Set();
   let thumbRaf = 0;
   function animateTransitionTiles(tiles, A, B) {
-    cancelAnimationFrame(thumbRaf);
+    if (!tiles.length) return;
+    tileGroups.add({ tiles, A, B });
+    if (thumbRaf) return;
     const loop = (now) => {
-      if (!tiles.length || !tiles[0].canvas.isConnected) return;
+      for (const grp of [...tileGroups]) if (!grp.tiles[0].canvas.isConnected) tileGroups.delete(grp);
+      if (!tileGroups.size) { thumbRaf = 0; return; }
       if (!state.exporting) {
         const cyc = (now / 1000) % 1.9;                 // hold A, transition, hold B
         const p = clamp((cyc - 0.35) / 1.1, 0, 1);
         tmpTag = 't';
-        for (const { canvas: cv, type } of tiles) {
-          const g = cv.getContext('2d');
-          g.setTransform(1, 0, 0, 1, 0, 0);
-          g.globalAlpha = 1; g.globalCompositeOperation = 'source-over'; g.filter = 'none';
-          g.fillStyle = '#000'; g.fillRect(0, 0, cv.width, cv.height);
-          (type === 'none' ? cutTo : TRANSITIONS[type].draw)(g, A, B, p, cv.width, cv.height);
+        for (const { tiles: ts, A: a, B: b } of tileGroups) {
+          if (!ts[0].canvas.offsetParent) continue;     // in a hidden tab
+          for (const { canvas: cv, type } of ts) {
+            const g = cv.getContext('2d');
+            g.setTransform(1, 0, 0, 1, 0, 0);
+            g.globalAlpha = 1; g.globalCompositeOperation = 'source-over'; g.filter = 'none';
+            g.fillStyle = '#000'; g.fillRect(0, 0, cv.width, cv.height);
+            (type === 'none' ? cutTo : TRANSITIONS[type].draw)(g, a, b, p, cv.width, cv.height);
+          }
         }
       }
       thumbRaf = requestAnimationFrame(loop);
     };
     thumbRaf = requestAnimationFrame(loop);
+  }
+  /** The picker: category headings + animated tiles. Returns the node; animation starts once it's in the page. */
+  function transitionGrid(a, b, cur, onPick, withNone = true) {
+    const TW = 120, TH = 80;
+    const A = sampleFrame(a, TW, TH, ['#7c3aed', '#db2777', 'A']), B = sampleFrame(b, TW, TH, ['#0891b2', '#16a34a', 'B']);
+    const tiles = [];
+    const tile = (type, label) => {
+      const cv = el('canvas', { width: TW, height: TH });
+      tiles.push({ canvas: cv, type });
+      return el('button', { type: 'button', class: 'tr-tile' + (cur === type ? ' on' : ''), 'data-trans': type, 'aria-pressed': String(cur === type), title: label, onclick: () => onPick(type) },
+        cv, el('span', {}, label));
+    };
+    const box = el('div', { class: 'tr-picker' });
+    for (const cat of TRANS_CATS) {
+      const items = Object.values(TRANSITIONS).filter(x => x.cat === cat);
+      box.append(el('div', { class: 'tr-cat' }, cat),
+        el('div', { class: 'tr-grid' }, cat === 'Basics' && withNone ? tile('none', 'None (cut)') : null, items.map(x => tile(x.id, x.label))));
+    }
+    return { node: box, start: () => animateTransitionTiles(tiles, A, B) };
+  }
+
+  /** Every cut between two touching clips on the visual (non-caption) tracks. */
+  function allCuts() {
+    const out = [];
+    for (const tr of tracks()) {
+      if (tr.kind !== 'visual' || tr.captions) continue;
+      const sorted = [...tr.clips].sort((x, y) => x.start - y.start);
+      for (let i = 0; i < sorted.length - 1; i++) {
+        if (Math.abs(sorted[i + 1].start - clipEnd(sorted[i])) < TOUCH) out.push({ a: sorted[i], b: sorted[i + 1], track: tr });
+      }
+    }
+    return out;
+  }
+  /** Which cut the Transitions tab acts on: the selected cut, else the selected clip's, else the one nearest the playhead. */
+  function targetCut() {
+    if (state.selectedTrans) { const info = transInfo(state.selectedTrans); if (info) return { ...info, why: 'selected' }; }
+    const cuts = allCuts();
+    if (!cuts.length) return null;
+    const sel = state.selectedIds.size === 1 ? selected() : null;
+    if (sel) {
+      const out = cuts.find(x => x.a === sel.clip) || cuts.find(x => x.b === sel.clip);
+      if (out) return { ...out, why: 'clip' };
+    }
+    const main = mainTrack();
+    let best = null, bd = Infinity;
+    for (const x of cuts) {
+      const d = Math.abs(clipEnd(x.a) - state.time) + (x.track === main ? 0 : 1e-3);
+      if (d < bd) { bd = d; best = x; }
+    }
+    return { ...best, why: 'playhead' };
+  }
+  /** Close the gaps between clips on the main track so every pair touches. */
+  function closeMainGaps() {
+    const sorted = [...mainTrack().clips].sort((x, y) => x.start - y.start);
+    let t = sorted.length ? sorted[0].start : 0, moved = 0;
+    for (const c of sorted) {
+      if (Math.abs(c.start - t) > EPS) { c.start = t; moved++; }
+      t = clipEnd(c);
+    }
+    commit();
+    toast(moved ? `Closed ${moved} gap${moved === 1 ? '' : 's'}. Tap a ＋ between clips, or pick a transition 👇` : 'No gaps to close');
+  }
+
+  // the left-panel Transitions tab
+  const transTabOpen = () => { const b = $('[data-body="transitions"]'); return !!b && !b.classList.contains('hidden'); };
+  let transTabKey = '';
+  function renderTransTab(force = false) {
+    const body = $('#transTab');
+    if (!body || !transTabOpen()) return;
+    const T = targetCut();
+    const key = T ? `${T.a.id}|${T.a.trans ? T.a.trans.type : ''}|${T.why}|${clipEnd(T.a).toFixed(2)}` : 'none|' + mainTrack().clips.length;
+    if (!force && key === transTabKey) return;
+    transTabKey = key;
+    const y = body.closest('.panel') ? body.closest('.panel').scrollTop : 0;
+    body.innerHTML = '';
+    const name = (c) => (c.type === 'text' ? `“${String(c.text).split('\n')[0].slice(0, 16)}”` : ((state.media.get(c.mediaId) || {}).name || c.type));
+    if (T) {
+      const cur = T.a.trans && TRANSITIONS[T.a.trans.type] ? T.a.trans.type : 'none';
+      const where = T.why === 'selected' ? 'the selected cut' : T.why === 'clip' ? 'your selected clip\'s cut' : 'the cut nearest the playhead';
+      body.append(el('div', { class: 'tr-howto' },
+        el('b', {}, 'Tap one to add it'),
+        el('span', { class: 'muted small' }, `Goes on ${where}: ${name(T.a)} → ${name(T.b)} at ${fmt(clipEnd(T.a))}. To pick a different cut, tap its ＋ on the timeline.`)));
+      const grid = transitionGrid(T.a, T.b, cur, (type) => {
+        setTransition(T.a, type);
+        commit();
+        selectTransition(T.a.id);
+        renderTransTab(true);
+        if (type !== 'none') previewTransition(T.a, T.b);
+        else toast('Transition removed');
+      });
+      body.append(grid.node);
+      grid.start();
+    } else {
+      const n = mainTrack().clips.length;
+      body.append(el('div', { class: 'tr-howto' },
+        el('b', {}, n < 2 ? 'Add at least 2 clips first' : 'Your clips aren\'t touching'),
+        el('span', { class: 'muted small' }, 'Transitions go on the cut between two clips sitting back to back on the same track. A ＋ appears on every cut on the timeline.'),
+        n >= 2 ? el('button', { type: 'button', class: 'primary', onclick: closeMainGaps }, '🧲 Close the gaps on the main track') : null));
+      const grid = transitionGrid(null, null, '', () => toast(n < 2 ? 'Add at least 2 clips to the timeline first' : 'Close the gaps first, so the clips touch 🧲'), false);
+      body.append(grid.node);
+      grid.start();
+    }
+    if (body.closest('.panel')) body.closest('.panel').scrollTop = y;
   }
 
   function renderTransitionInspector({ a, b, track }) {
@@ -2272,23 +2387,9 @@
     }
     insp.append(head);
 
-    const TW = 120, TH = 80;
-    const A = sampleFrame(a, TW, TH, ['#7c3aed', '#db2777', 'A']), B = sampleFrame(b, TW, TH, ['#0891b2', '#16a34a', 'B']);
-    const tiles = [];
-    const tile = (type, label) => {
-      const cv = el('canvas', { width: TW, height: TH });
-      tiles.push({ canvas: cv, type });
-      return el('button', { type: 'button', class: 'tr-tile' + (cur === type ? ' on' : ''), 'data-trans': type, 'aria-pressed': String(cur === type), title: label, onclick: () => choose(type) },
-        cv, el('span', {}, label));
-    };
-    const pick = section('Pick one');
-    for (const cat of TRANS_CATS) {
-      const items = Object.values(TRANSITIONS).filter(x => x.cat === cat);
-      pick.append(el('div', { class: 'tr-cat' }, cat),
-        el('div', { class: 'tr-grid' }, cat === 'Basics' ? tile('none', 'None (cut)') : null, items.map(x => tile(x.id, x.label))));
-    }
-    insp.append(pick);
-    animateTransitionTiles(tiles, A, B);
+    const grid = transitionGrid(a, b, cur, choose);
+    insp.append(section('Pick one', grid.node));
+    grid.start();
   }
 
   function renderInspector() {
@@ -2901,6 +3002,7 @@
     $$('.tab').forEach(tab => tab.addEventListener('click', () => {
       $$('.tab').forEach(t => t.classList.toggle('active', t === tab));
       $$('.tab-body').forEach(b => b.classList.toggle('hidden', b.dataset.body !== tab.dataset.tab));
+      if (tab.dataset.tab === 'transitions') renderTransTab(true);
     }));
   }
 
