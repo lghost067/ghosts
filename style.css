@@ -315,7 +315,8 @@ kbd { background: var(--panel-2); border: 1px solid var(--line); border-bottom-w
   box-shadow: 0 0 6px #fff8;
 }
 .playhead .knob {
-  position: absolute; top: 0; left: -6px; width: 14px; height: 16px;
+  /* sticky: the handle stays at the top of the timeline even when the tracks are scrolled up or down */
+  position: sticky; top: 0; display: block; margin-left: -6px; width: 14px; height: 16px;
   background: #fff; clip-path: polygon(0 0, 100% 0, 100% 60%, 50% 100%, 0 60%);
 }
 
@@ -374,18 +375,78 @@ kbd { background: var(--panel-2); border: 1px solid var(--line); border-bottom-w
 @media (max-width: 1100px) {
   .workspace { grid-template-columns: 240px minmax(0, 1fr) 260px; }
 }
+/* ---------- phones: an app-style screen. Preview and timeline stay put; the panel below scrolls on its own ---------- */
+.m-tabs { display: none; }
 @media (max-width: 860px) {
-  body { display: flex; flex-direction: column; overflow: auto; height: auto; min-height: 100%; }
-  .topbar { position: sticky; top: 0; z-index: 20; order: 0; }
-  .top-actions { margin-left: 0; }
-  .top-actions .field-inline span { display: none; }
+  :root { --head-w: 84px; --track-h: 44px; --m-preview: clamp(150px, 33dvh, 48vh); --m-timeline: clamp(118px, 23dvh, 300px); }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    display: grid; height: 100vh; height: 100dvh;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto var(--m-preview) var(--m-timeline) auto minmax(0, 1fr);
+    grid-template-areas: "top" "preview" "timeline" "mtabs" "panel";
+  }
   .workspace { display: contents; }
-  .preview { order: 1; height: 50vh; flex: none; }
-  .timeline { order: 2; height: 280px; flex: none; }
-  .panel.left { order: 3; overflow: visible; border-right: none; border-top: 1px solid var(--line); }
-  .panel.right { order: 4; overflow: visible; border-left: none; border-top: 1px solid var(--line); }
+
+  /* one row: logo · (swipe sideways: projects, undo, ratio…) · Export always on the right */
+  .topbar { grid-area: top; flex-wrap: nowrap; gap: 8px; padding: 6px 10px; padding-top: max(6px, env(safe-area-inset-top, 0px)); }
+  .brand { flex: none; font-size: 15px; }
+  .brand .bname { display: none; }
+  .top-actions { margin-left: 0; flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+  .top-actions::-webkit-scrollbar { display: none; }
+  .top-actions > * { flex: none; }
+  .top-actions .field-inline span { display: none; }
+  .top-actions button, .top-actions select { white-space: nowrap; }
+  #exportBtn, #resaveBtn { flex: none; white-space: nowrap; }
+  .proj-btn { max-width: 130px; }
+
+  .preview { grid-area: preview; min-height: 0; }
+  .stage-wrap { padding: 6px; }
+  .transport { padding: 4px 10px; gap: 8px; }
+  .timecode { white-space: nowrap; font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+  .transport .icon-btn.play { width: 38px; height: 34px; }
+
+  .timeline { grid-area: timeline; min-height: 0; }
+  .tl-toolbar { flex-wrap: nowrap; overflow-x: auto; padding: 4px 8px; scrollbar-width: none; }
+  .tl-toolbar::-webkit-scrollbar { display: none; }
+  .tl-toolbar > * { flex: none; }
+  .tl-toolbar button { white-space: nowrap; }
+  .tl-toolbar .zoom input { width: 90px; }
+  .tl-toolbar .spacer { flex: 0 0 4px; }
+  .ruler-row { height: 22px; }
+  .track-row.audio { height: 38px; }
+
+  .m-tabs {
+    grid-area: mtabs; display: flex; gap: 2px; padding: 4px 6px;
+    background: var(--panel); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  }
+  .m-tab {
+    flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 1px;
+    padding: 4px 2px; font-size: 11px; line-height: 1.1; background: transparent; border-color: transparent; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .m-tab span { font-size: 16px; }
+  .m-tab.active { background: var(--panel-2); border-color: var(--line); color: var(--text); }
+
+  .panel.left, .panel.right {
+    grid-area: panel; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+    border: none; padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .panel.left .tabs { display: none; }
+  body:not(.m-edit) .panel.right { display: none; }
+  body.m-edit .panel.left { display: none; }
   .media-grid { grid-template-columns: repeat(3, 1fr); }
-  :root { --head-w: 96px; }
+}
+/* phones sideways: preview on the left, panel on the right, timeline along the bottom */
+@media (max-width: 860px) and (orientation: landscape) and (max-height: 540px) {
+  :root { --m-timeline: clamp(110px, 34dvh, 200px); }
+  body {
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr) var(--m-timeline);
+    grid-template-areas: "top top" "preview mtabs" "preview panel" "timeline timeline";
+  }
+  .m-tabs { border-top: none; }
+}
 }
 
 .tr-howto { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }

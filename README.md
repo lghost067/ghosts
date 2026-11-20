@@ -9,6 +9,8 @@ There's no install, no account, no watermark and no subscription, and your files
 
 It works on desktop and phone. Chrome or Edge give the best results, including MP4 export.
 
+On phones it works like an app: the preview and timeline stay on screen while the bottom panel (Edit · Media · Text · Stickers · Transitions) scrolls on its own, so you always see your changes as you make them. Tapping a clip jumps to Edit.
+
 ## Run it yourself
 
 Option A: open `index.html` in Chrome, Edge or Firefox.

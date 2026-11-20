@@ -6,11 +6,11 @@
   <title>GhostCut — free video editor</title>
   <meta name="description" content="A free, private, in-browser video editor. No uploads, no watermark, no subscription.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👻</text></svg>">
-  <link rel="stylesheet" href="style.css?v=11">
+  <link rel="stylesheet" href="style.css?v=14">
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="logo">👻</span> GhostCut <span class="save-state saved" id="saveState" title="Saved on this device">✓ Saved</span></div>
+    <div class="brand"><span class="logo">👻</span> <span class="bname">GhostCut</span> <span class="save-state saved" id="saveState" title="Saved on this device">✓ Saved</span></div>
     <div class="top-actions">
       <button id="projBtn" class="proj-btn" title="Projects" aria-haspopup="dialog">📁 <span class="pname">Project 1</span></button>
       <button id="undoBtn" class="icon-btn" title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
@@ -36,9 +36,9 @@
         <span>BG</span>
         <input type="color" id="bgColor" value="#000000">
       </label>
-      <button id="resaveBtn" class="hidden" title="Save the last export again">💾 Save again</button>
-      <button id="exportBtn" class="primary">⬇ Export</button>
     </div>
+    <button id="resaveBtn" class="hidden" title="Save the last export again">💾 Save again</button>
+    <button id="exportBtn" class="primary">⬇ Export</button>
   </header>
 
   <main class="workspace">
@@ -132,6 +132,15 @@
       </div>
     </div>
   </section>
+
+  <!-- phones: switch what the bottom panel shows -->
+  <nav class="m-tabs" id="mTabs" role="tablist" aria-label="Panels">
+    <button type="button" class="m-tab" data-m="edit" role="tab" aria-selected="false"><span aria-hidden="true">✎</span>Edit</button>
+    <button type="button" class="m-tab active" data-m="media" role="tab" aria-selected="true"><span aria-hidden="true">🎞</span>Media</button>
+    <button type="button" class="m-tab" data-m="text" role="tab" aria-selected="false"><span aria-hidden="true">🔤</span>Text</button>
+    <button type="button" class="m-tab" data-m="stickers" role="tab" aria-selected="false"><span aria-hidden="true">✨</span>Stickers</button>
+    <button type="button" class="m-tab" data-m="transitions" role="tab" aria-selected="false"><span aria-hidden="true">⧓</span>Transitions</button>
+  </nav>
 
   <div class="modal hidden" id="voModal" role="dialog" aria-modal="true" aria-labelledby="voTitle">
     <div class="modal-card vo-card">
@@ -253,6 +262,6 @@
   <div class="toast-wrap" id="toasts"></div>
   <div id="mediaHolder" aria-hidden="true"></div>
 
-  <script src="app.js?v=11"></script>
+  <script src="app.js?v=13"></script>
 </body>
 </html>

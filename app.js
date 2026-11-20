@@ -31,6 +31,19 @@
     for (const kid of kids.flat()) if (kid != null) n.append(kid.nodeType ? kid : document.createTextNode(kid));
     return n;
   };
+  // phones: the bottom panel shows one thing at a time (Edit, or one of the left-panel tabs)
+  const phoneLayout = window.matchMedia('(max-width: 860px)');
+  function showPanel(name) {
+    document.body.classList.toggle('m-edit', name === 'edit');
+    for (const b of document.querySelectorAll('.m-tab')) {
+      const on = b.dataset.m === name;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', String(on));
+    }
+    if (name !== 'edit') { const t = document.querySelector(`.tab[data-tab="${name}"]`); if (t && !t.classList.contains('active')) t.click(); }
+  }
+  /** On a phone, jump to the Edit panel (when you tap a clip, a cut, or add text). */
+  const showEditOnPhone = () => { if (phoneLayout.matches && !document.body.classList.contains('m-edit')) showPanel('edit'); };
   const toast = (msg, ms = 2600) => {
     const t = el('div', { class: 'toast' }, msg);
     $('#toasts').append(t);
@@ -1632,12 +1645,13 @@
     if (ev.button !== 0 || state.exporting) return;
     if (ev.target.closest('.track-head')) return;
     const join = ev.target.closest('.tjoin');
-    if (join) { ev.preventDefault(); selectTransition(join.dataset.a); return; }
+    if (join) { ev.preventDefault(); selectTransition(join.dataset.a); showEditOnPhone(); return; }
     const clipNode = ev.target.closest('.clip');
     const additive = ev.shiftKey || ev.ctrlKey || ev.metaKey || state.multiMode;
     if (clipNode) {
       const found = findClip(clipNode.dataset.clip);
       if (!found) return;
+      showEditOnPhone();
       ev.preventDefault();
       const id = found.clip.id;
       const handle = ev.target.dataset.handle;
@@ -1866,6 +1880,7 @@
     }
     const hit = hitTest(p);
     if (!hit) { if (!additive) select(null); return; }
+    showEditOnPhone();
     if (additive) {
       if (state.selectedIds.has(hit.id)) { select(hit.id, 'toggle'); return; }
       select(hit.id, 'add');
@@ -2999,7 +3014,7 @@
         t.glow ? `text-shadow:0 0 8px ${t.color}` : t.shadow ? 'text-shadow:0 2px 4px #000' : '',
       ].join(';');
       const b = el('button', { class: 'preset', title: `Add “${p.name}” text` }, el('span', { style }, p.name));
-      b.addEventListener('click', () => addText(p.t));
+      b.addEventListener('click', () => { addText(p.t); showEditOnPhone(); });
       tp.append(b);
     }
     const sg = $('#stickerGrid');
@@ -3123,6 +3138,7 @@
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveNow(); });
     window.addEventListener('pagehide', () => saveNow());
     $('#projBtn').addEventListener('click', openProjects);
+    for (const b of $$('.m-tab')) b.addEventListener('click', () => showPanel(b.dataset.m));
     $('#projImport').addEventListener('click', () => $('#projFileInput').click());
     $('#projFileInput').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importProjectFile(f); });
     $('#shareDownload').addEventListener('click', downloadProjectFile);
