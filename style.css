@@ -421,4 +421,34 @@ kbd { background: var(--panel-2); border: 1px solid var(--line); border-bottom-w
 .save-state.saved { color: #86efac; background: #22c55e1a; }
 .save-state.saving { color: var(--muted); background: var(--panel-2); }
 .save-state.error { color: #fda4af; background: #f43f5e22; }
-button.primary.danger { background: #e11d48; border-color: #e11d48; }
+
+/* ---------- projects ---------- */
+.proj-btn { display: inline-flex; align-items: center; gap: 6px; max-width: 190px; }
+.proj-btn .pname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.proj-card { text-align: left; width: min(560px, 94vw); max-height: 90vh; display: flex; flex-direction: column; gap: 8px; }
+.proj-card > p { margin: 0; }
+.proj-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.proj-head h2 { margin: 0; }
+.proj-list { display: grid; gap: 8px; overflow-y: auto; min-height: 0; padding: 2px; }
+.proj-empty { padding: 18px 0; text-align: center; }
+.proj-item {
+  display: grid; grid-template-columns: 88px minmax(0, 1fr) auto; gap: 12px; align-items: center;
+  padding: 8px; border-radius: 12px; background: var(--panel-2); border: 1px solid var(--line); cursor: pointer;
+}
+.proj-item:hover, .proj-item:focus-visible { border-color: var(--accent); outline: none; }
+.proj-item.current { border-color: var(--accent-2); box-shadow: 0 0 0 1px var(--accent-2) inset; }
+.proj-thumb { width: 88px; height: 56px; border-radius: 8px; overflow: hidden; background: #000; display: grid; place-items: center; }
+.proj-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.proj-ph { font-size: 24px; opacity: .7; }
+.proj-info { display: grid; gap: 2px; min-width: 0; }
+.proj-name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proj-rename { width: 100%; min-width: 0; }
+.proj-badge { justify-self: start; margin-top: 2px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: #06141a; background: var(--accent-2); border-radius: 999px; padding: 1px 7px; }
+.proj-acts { display: flex; gap: 4px; }
+.proj-acts button { padding: 5px 8px; font-size: 13px; }
+.proj-acts button.armed { background: #e11d48; border-color: #e11d48; color: #fff; font-size: 12px; }
+@media (max-width: 520px) {
+  .proj-item { grid-template-columns: 72px minmax(0, 1fr); }
+  .proj-thumb { width: 72px; height: 48px; }
+  .proj-acts { grid-column: 1 / -1; justify-content: flex-end; }
+}

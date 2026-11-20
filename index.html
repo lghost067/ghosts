@@ -6,13 +6,13 @@
   <title>GhostCut — free video editor</title>
   <meta name="description" content="A free, private, in-browser video editor. No uploads, no watermark, no subscription.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👻</text></svg>">
-  <link rel="stylesheet" href="style.css?v=9">
+  <link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
   <header class="topbar">
     <div class="brand"><span class="logo">👻</span> GhostCut <span class="save-state saved" id="saveState" title="Saved on this device">✓ Saved</span></div>
     <div class="top-actions">
-      <button id="newBtn" title="Start a new project" aria-label="New project">📄 New</button>
+      <button id="projBtn" class="proj-btn" title="Projects" aria-haspopup="dialog">📁 <span class="pname">Project 1</span></button>
       <button id="undoBtn" class="icon-btn" title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
       <button id="redoBtn" class="icon-btn" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">↷</button>
       <label class="field-inline" title="Aspect ratio">
@@ -152,20 +152,21 @@
 
   <div class="modal hidden" id="restoreModal" role="dialog" aria-modal="true" aria-label="Restoring your project">
     <div class="modal-card">
-      <h2>Restoring your project 👻</h2>
+      <h2 id="restoreTitle">Restoring your project 👻</h2>
       <div class="progress indeterminate"><div class="bar"></div></div>
       <p class="muted small" id="restoreDetail"></p>
     </div>
   </div>
 
-  <div class="modal hidden" id="newModal" role="dialog" aria-modal="true" aria-labelledby="newTitle">
-    <div class="modal-card">
-      <h2 id="newTitle">Start a new project?</h2>
-      <p class="muted small">This clears the timeline and your media library on this device. Export first if you want to keep this one.</p>
-      <div class="cap-actions" style="justify-content:center">
-        <button type="button" id="newCancel">Keep editing</button>
-        <button type="button" class="primary danger" id="newGo">Start fresh</button>
+  <div class="modal hidden" id="projModal" role="dialog" aria-modal="true" aria-labelledby="projTitle">
+    <div class="modal-card proj-card">
+      <div class="proj-head">
+        <h2 id="projTitle">📁 Your projects</h2>
+        <button type="button" class="primary" id="projNew">＋ New project</button>
       </div>
+      <p class="muted small">Saved on this device as you edit. Tap one to open it.</p>
+      <div class="proj-list" id="projList"></div>
+      <div class="cap-actions"><button type="button" id="projClose">Close</button></div>
     </div>
   </div>
 
@@ -231,6 +232,6 @@
   <div class="toast-wrap" id="toasts"></div>
   <div id="mediaHolder" aria-hidden="true"></div>
 
-  <script src="app.js?v=9"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

@@ -936,7 +936,7 @@
       if (T) drawTransition(T, t, first);    // the bottom track is drawn as solid frames
       first = false;
     }
-    if (!state.exporting && !state.playing) drawOverlay(t);
+    if (!state.exporting && !state.playing && !skipOverlay) drawOverlay(t);
   }
 
   // ------------------------------------------------------------------
@@ -3078,7 +3078,8 @@
     window.addEventListener('keydown', (e) => {
       const tag = (e.target.tagName || '').toLowerCase();
       if (tag === 'textarea' || (tag === 'input' && !['range', 'checkbox', 'color'].includes(e.target.type)) || tag === 'select') return;
-      if (state.exporting || save.restoring) return;
+      if (state.exporting || save.restoring || save.switching) return;
+      if (!$('#projModal').classList.contains('hidden')) { if (e.key === 'Escape') closeProjects(); return; }
       if (vo.phase !== 'idle') {
         if (vo.phase === 'setup') { if (e.key === 'Escape') closeVoiceover(); return; }
         if (e.key === ' ' || e.key === 'Escape') { e.preventDefault(); stopVoiceover(); }
@@ -3119,9 +3120,10 @@
     // phones often kill a backgrounded tab without warning: save the moment it's hidden
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveNow(); });
     window.addEventListener('pagehide', () => saveNow());
-    $('#newBtn').addEventListener('click', () => $('#newModal').classList.remove('hidden'));
-    $('#newCancel').addEventListener('click', () => $('#newModal').classList.add('hidden'));
-    $('#newGo').addEventListener('click', () => { $('#newModal').classList.add('hidden'); newProject(); });
+    $('#projBtn').addEventListener('click', openProjects);
+    $('#projClose').addEventListener('click', closeProjects);
+    $('#projNew').addEventListener('click', () => { closeProjects(); newProject(); });
+    $('#projModal').addEventListener('click', (e) => { if (e.target.id === 'projModal') closeProjects(); });
   }
 
   // ------------------------------------------------------------------
@@ -3351,18 +3353,21 @@
   // ------------------------------------------------------------------
   // autosave: the project and its media files live in this browser's storage (IndexedDB)
   // ------------------------------------------------------------------
-  const save = { status: 'saved', timer: 0, restoring: false, ready: false, persisted: false, pending: null };
+  const save = { status: 'saved', timer: 0, restoring: false, switching: false, ready: false, persisted: false, pending: null };
+  // the project being edited: its stored record exists once it has had something in it (or was made with New)
+  let proj = { id: uid(), name: 'Project 1', createdAt: Date.now(), stored: false };
   let dbPromise = null;
   function openDb() {
     if (!dbPromise) {
       dbPromise = new Promise((resolve, reject) => {
         if (!window.indexedDB) { reject(new Error('IndexedDB unavailable')); return; }
         let req;
-        try { req = indexedDB.open('ghostcut', 1); } catch (err) { reject(err); return; }
+        try { req = indexedDB.open('ghostcut', 2); } catch (err) { reject(err); return; }
         req.onupgradeneeded = () => {
           const d = req.result;
           if (!d.objectStoreNames.contains('media')) d.createObjectStore('media', { keyPath: 'id' });
           if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
+          if (!d.objectStoreNames.contains('projects')) d.createObjectStore('projects', { keyPath: 'id' });
         };
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error || new Error('IndexedDB failed to open'));
@@ -3430,19 +3435,45 @@
     clearTimeout(save.timer);
     save.timer = setTimeout(saveNow, 600);
   }
-  function saveNow() {
+  const liveMediaIds = () => [...state.media.values()].filter(m => !m.loading && !m.removed).map(m => m.id);
+  const isEmptyProject = () => !allClips().length && !liveMediaIds().length;
+
+  // a small picture of the frame under the playhead, for the project list
+  let skipOverlay = false;
+  function projectThumb() {
+    if (!allClips().some(isVisual)) return null;
+    try {
+      skipOverlay = true;
+      render();
+      const h = 120, w = Math.max(1, Math.round((h * canvas.width) / canvas.height));
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(canvas, 0, 0, w, h);
+      return c.toDataURL('image/jpeg', 0.7);
+    } catch { return null; }
+    finally { skipOverlay = false; requestRender(); }
+  }
+
+  function saveNow({ force = false } = {}) {
     if (!save.ready || save.restoring) return Promise.resolve();
     clearTimeout(save.timer);
-    const live = [...state.media.values()].filter(m => !m.loading && !m.removed).map(m => m.id);
+    if (!force && !proj.stored && isEmptyProject()) { if (save.status !== 'error') setSaveStatus('saved'); return Promise.resolve(); }
+    const live = liveMediaIds();
     const used = [...new Set(allClips().map(c => c.mediaId).filter(Boolean))];
-    const snap = { v: 1, savedAt: Date.now(), project: JSON.parse(JSON.stringify(state.project)), time: state.time, pps: state.pps, library: live, used };
-    const keep = new Set([...live, ...used]);
-    const job = tx('kv', 'readwrite', st => st.put(snap, 'current'))
-      .then(async () => {
-        // drop stored files nothing points at any more
-        const ids = await tx('media', 'readonly', st => st.getAllKeys());
-        const stale = (ids || []).filter(id => !keep.has(id) && !state.media.has(id));
-        if (stale.length) await tx('media', 'readwrite', st => { for (const id of stale) st.delete(id); });
+    const p = proj;
+    // "last edited" only moves on real edits, not on opening a project or moving the playhead
+    const sig = JSON.stringify([state.project, live, p.name]);
+    if (sig !== p.sig || !p.updatedAt) { p.updatedAt = Date.now(); p.sig = sig; }
+    const rec = {
+      id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt,
+      project: JSON.parse(JSON.stringify(state.project)), time: state.time, pps: state.pps, library: live, used,
+      thumb: projectThumb(), duration: projectDuration(), clipCount: allClips().length,
+    };
+    const job = tx('projects', 'readwrite', st => st.put(rec))
+      .then(() => tx('kv', 'readwrite', st => st.put(p.id, 'currentId')))
+      .then(() => {
+        p.stored = true;
+        const keep = new Set([...live, ...used]);
         const anyUnsaved = [...state.media.values()].some(m => m.unsaved && keep.has(m.id));
         if (anyUnsaved) setSaveStatus('error', 'Some files couldn’t be backed up (out of space). Export before you leave.');
         else setSaveStatus('saved');
@@ -3455,26 +3486,57 @@
     return job;
   }
 
-  /** Bring back the last project (and its files) from this device. */
-  async function restoreProject() {
-    let snap = null;
-    try { snap = await tx('kv', 'readonly', st => st.get('current')); }
-    catch (err) { console.warn('restore: storage unavailable', err); setSaveStatus('error'); save.ready = true; return; }
-    const hasStuff = snap && snap.project && ((snap.library && snap.library.length) || snap.project.tracks.some(t => t.clips.length));
-    if (!hasStuff) { save.ready = true; setSaveStatus('saved'); saveNow(); return; }
+  /** Delete stored files that no project (and nothing open right now) uses. */
+  async function gcMedia() {
+    try {
+      const all = await tx('projects', 'readonly', st => st.getAll());
+      const keep = new Set(state.media.keys());
+      for (const r of all || []) for (const id of [...(r.library || []), ...(r.used || [])]) keep.add(id);
+      const ids = await tx('media', 'readonly', st => st.getAllKeys());
+      const stale = (ids || []).filter(id => !keep.has(id));
+      if (stale.length) await tx('media', 'readwrite', st => { for (const id of stale) st.delete(id); });
+    } catch (err) { console.warn('cleanup failed', err); }
+  }
+
+  /** Close whatever is open (it has already been saved). */
+  function clearWorkspace() {
+    pause();
+    for (const m of state.media.values()) { try { URL.revokeObjectURL(m.url); } catch { /* ignore */ } }
+    state.media.clear();
+    for (const id of [...els.keys()]) disposeEl(id);
+    state.selectedIds = new Set(); state.selectedId = null; state.selectedTrans = null;
+    state.time = 0;
+  }
+  function resetHistory() {
+    history.stack = [JSON.stringify(state.project)];
+    history.idx = 0;
+  }
+  function syncProjectName() {
+    const b = $('#projBtn');
+    if (!b) return;
+    b.querySelector('.pname').textContent = proj.name;
+    b.title = `Projects · editing “${proj.name}”`;
+    document.title = `${proj.name} · GhostCut`;
+  }
+
+  /** Load a stored project record and its files. Returns how many files were missing. */
+  async function loadProject(rec) {
     save.restoring = true;
     $('#restoreModal').classList.remove('hidden');
-    const ids = [...new Set([...(snap.library || []), ...(snap.used || [])])];
+    $('#restoreTitle').textContent = `Opening “${rec.name}” 👻`;
+    $('#restoreDetail').textContent = '';
+    const library = rec.library || [];
+    const ids = [...new Set([...library, ...(rec.used || [])])];
     let missing = 0;
     for (const id of ids) {
-      let rec = null;
-      try { rec = await tx('media', 'readonly', st => st.get(id)); } catch { rec = null; }
-      if (!rec || (!rec.blob && !rec.buffer)) { missing++; continue; }
-      const blob = rec.blob || new Blob([rec.buffer], { type: rec.type });
-      const m = { id, name: rec.name, kind: rec.kind, url: URL.createObjectURL(blob), duration: 0, w: 0, h: 0, thumb: null, wave: null, loading: true, voiceover: !!rec.voiceover };
-      m.removed = !(snap.library || []).includes(id);     // used by clips but deleted from the library
+      let m0 = null;
+      try { m0 = await tx('media', 'readonly', st => st.get(id)); } catch { m0 = null; }
+      if (!m0 || (!m0.blob && !m0.buffer)) { missing++; continue; }
+      const blob = m0.blob || new Blob([m0.buffer], { type: m0.type });
+      const m = { id, name: m0.name, kind: m0.kind, url: URL.createObjectURL(blob), duration: 0, w: 0, h: 0, thumb: null, wave: null, loading: true, voiceover: !!m0.voiceover };
+      m.removed = !library.includes(id);     // used by clips but deleted from the library
       state.media.set(id, m);
-      $('#restoreDetail').textContent = rec.name;
+      $('#restoreDetail').textContent = m0.name;
       try {
         if (m.kind === 'image') await loadImage(m);
         else if (m.kind === 'video') await loadVideo(m);
@@ -3482,51 +3544,247 @@
         m.loading = false;
         if (m.kind !== 'image' && blob.size < 250e6) computeWave(m, blob).then(() => renderTimeline()).catch(() => {});
       } catch (err) {
-        console.warn('restore: could not load', rec.name, err);
+        console.warn('restore: could not load', m0.name, err);
         URL.revokeObjectURL(m.url);
         state.media.delete(id);
         missing++;
       }
     }
-    state.project = snap.project;
-    history.stack = [JSON.stringify(state.project)];
-    history.idx = 0;
-    state.selectedIds = new Set(); state.selectedId = null; state.selectedTrans = null;
-    if (snap.pps) state.pps = clamp(snap.pps, 10, 400);
+    proj = { id: rec.id, name: rec.name || 'Untitled', createdAt: rec.createdAt || Date.now(), stored: true, updatedAt: rec.updatedAt };
+    state.project = rec.project;
+    resetHistory();
+    if (rec.pps) state.pps = clamp(rec.pps, 10, 400);
     renderMediaGrid();
     syncTopbar();
+    syncProjectName();
+    save.restoring = false;
     afterChange(true);
     $('#zoomRange').value = state.pps;
-    seek(snap.time || 0);
-    save.restoring = false;
-    save.ready = true;
+    seek(rec.time || 0);
     $('#restoreModal').classList.add('hidden');
+    proj.sig = missing ? null : JSON.stringify([state.project, liveMediaIds(), proj.name]);
+    if (!proj.sig) proj.updatedAt = rec.updatedAt;
+    try { await tx('kv', 'readwrite', st => st.put(rec.id, 'currentId')); } catch { /* ignore */ }
+    return missing;
+  }
+  const missingNote = (n) => (n ? ` ${n} file${n > 1 ? 's were' : ' was'} missing; re-import ${n > 1 ? 'them' : 'it'}.` : '');
+
+  /** On start-up: reopen the last project you worked on. */
+  async function restoreProject() {
+    let rec = null;
+    try {
+      // projects from before multi-project support were kept under one key: turn that into a project
+      const old = await tx('kv', 'readonly', st => st.get('current'));
+      if (old && old.project) {
+        const id = uid();
+        await tx('projects', 'readwrite', st => st.put({ ...old, id, name: 'My project', createdAt: old.savedAt || Date.now(), updatedAt: old.savedAt || Date.now(), thumb: null, duration: 0, clipCount: old.project.tracks.reduce((n, t) => n + t.clips.length, 0) }));
+        await tx('kv', 'readwrite', st => { st.put(id, 'currentId'); st.delete('current'); });
+      }
+      const curId = await tx('kv', 'readonly', st => st.get('currentId'));
+      if (curId) rec = await tx('projects', 'readonly', st => st.get(curId));
+      if (!rec) {
+        const all = await tx('projects', 'readonly', st => st.getAll());
+        rec = (all || []).sort((a, b) => b.updatedAt - a.updatedAt)[0] || null;
+      }
+      if (!rec) proj.name = await nextProjectName();
+    } catch (err) {
+      console.warn('restore: storage unavailable', err);
+      setSaveStatus('error');
+      save.ready = true;
+      syncProjectName();
+      return;
+    }
+    save.ready = true;
+    syncProjectName();
+    if (!rec) { setSaveStatus('saved'); gcMedia(); return; }
+    const missing = await loadProject(rec);
     setSaveStatus('saved');
-    saveNow();          // also clears out stored files the project no longer uses
-    const when = new Date(snap.savedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
-    toast(missing
-      ? `Restored your project (saved ${when}). ${missing} file${missing > 1 ? 's were' : ' was'} missing; re-import ${missing > 1 ? 'them' : 'it'}.`
-      : `Welcome back 👻 Restored your project from ${when}`, 5000);
+    gcMedia();
+    const when = new Date(rec.updatedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+    toast(`Welcome back 👻 Opened “${rec.name}” (last edited ${when}).${missingNote(missing)}`, 5000);
+  }
+
+  async function nextProjectName() {
+    let names = new Set();
+    try { names = new Set((await tx('projects', 'readonly', st => st.getAll()) || []).map(r => r.name)); } catch { /* ignore */ }
+    let n = 1;
+    while (names.has(`Project ${n}`)) n++;
+    return `Project ${n}`;
+  }
+  const busyForSwitch = () => {
+    if (state.exporting) { toast('Wait for the export to finish'); return true; }
+    if (vo.phase !== 'idle') { toast('Finish the voiceover first'); return true; }
+    return false;
+  };
+
+  /** Run a project switch with the "Opening…" screen up and input blocked from the first moment. */
+  async function switching(title, fn) {
+    save.switching = true;
+    $('#restoreTitle').textContent = title;
+    $('#restoreDetail').textContent = '';
+    $('#restoreModal').classList.remove('hidden');
+    try { return await fn(); }
+    finally { save.switching = false; if (!save.restoring) $('#restoreModal').classList.add('hidden'); }
   }
 
   async function newProject() {
-    pause();
-    setSaveStatus('saving');
-    for (const m of state.media.values()) { try { URL.revokeObjectURL(m.url); } catch { /* ignore */ } }
-    state.media.clear();
-    for (const id of [...els.keys()]) disposeEl(id);
+    if (busyForSwitch() || save.switching) return;
+    return switching('Starting a new project ✨', newProjectInner);
+  }
+  async function newProjectInner() {
+    await saveNow();
+    clearWorkspace();
+    proj = { id: uid(), name: await nextProjectName(), createdAt: Date.now(), stored: false };
     state.project = freshProject();
-    state.selectedIds = new Set(); state.selectedId = null; state.selectedTrans = null;
-    state.time = 0;
-    history.stack = [JSON.stringify(state.project)];
-    history.idx = 0;
+    resetHistory();
     renderMediaGrid();
     syncTopbar();
+    syncProjectName();
     afterChange(true);
     seek(0);
-    // write the empty project right away (no debounce), which also deletes every stored file
+    await saveNow({ force: true });      // it shows up in the list straight away
+    toast(`Started “${proj.name}” ✨ Your other projects are in 📁 Projects`);
+  }
+  async function openProject(id) {
+    if (id === proj.id) { closeProjects(); return; }
+    if (busyForSwitch() || save.switching) return;
+    closeProjects();
+    return switching('Opening project 👻', () => openProjectInner(id));
+  }
+  async function openProjectInner(id) {
+    let rec = null;
+    try { rec = await tx('projects', 'readonly', st => st.get(id)); } catch { rec = null; }
+    if (!rec) { toast('That project couldn’t be found'); return; }
     await saveNow();
-    toast('Fresh project ✨');
+    clearWorkspace();
+    const missing = await loadProject(rec);
+    setSaveStatus('saved');
+    gcMedia();
+    toast(`Opened “${rec.name}”${missingNote(missing) ? '.' + missingNote(missing) : ' 👻'}`, missing ? 5000 : 2600);
+  }
+  async function renameProject(id, name) {
+    name = String(name || '').trim().slice(0, 60);
+    if (!name) return;
+    if (id === proj.id) {
+      proj.name = name;
+      syncProjectName();
+      await saveNow({ force: true });
+    } else {
+      try {
+        const rec = await tx('projects', 'readonly', st => st.get(id));
+        if (rec) { rec.name = name; await tx('projects', 'readwrite', st => st.put(rec)); }
+      } catch (err) { toast('Couldn’t rename it: ' + err.message); }
+    }
+    renderProjectList();
+  }
+  async function duplicateProject(id) {
+    if (id === proj.id) await saveNow({ force: true });
+    try {
+      const rec = await tx('projects', 'readonly', st => st.get(id));
+      if (!rec) return;
+      const names = new Set((await tx('projects', 'readonly', st => st.getAll())).map(r => r.name));
+      let name = `${rec.name} copy`, n = 2;
+      while (names.has(name)) name = `${rec.name} copy ${n++}`;
+      await tx('projects', 'readwrite', st => st.put({ ...rec, id: uid(), name, createdAt: Date.now(), updatedAt: Date.now() }));
+      toast(`Made “${name}”`);
+    } catch (err) { toast('Couldn’t duplicate it: ' + err.message); }
+    renderProjectList();
+  }
+  async function deleteProject(id) {
+    if (id === proj.id && (busyForSwitch() || save.switching)) return;
+    if (id === proj.id) return switching('Deleting… 🗑', () => deleteProjectInner(id));
+    return deleteProjectInner(id);
+  }
+  async function deleteProjectInner(id) {
+    if (id === proj.id) clearTimeout(save.timer);      // don't let a pending save bring it back
+    try { await tx('projects', 'readwrite', st => st.delete(id)); } catch (err) { toast('Couldn’t delete it: ' + err.message); return; }
+    if (id === proj.id) {
+      // the open project is gone: open the most recent other one, or start an empty one
+      const rest = ((await tx('projects', 'readonly', st => st.getAll())) || []).sort((a, b) => b.updatedAt - a.updatedAt);
+      clearWorkspace();
+      if (rest.length) {
+        await loadProject(rest[0]);
+        setSaveStatus('saved');
+      } else {
+        proj = { id: uid(), name: await nextProjectName(), createdAt: Date.now(), stored: false };
+        state.project = freshProject();
+        resetHistory();
+        renderMediaGrid(); syncTopbar(); syncProjectName(); afterChange(true); seek(0);
+        try { await tx('kv', 'readwrite', st => st.delete('currentId')); } catch { /* ignore */ }
+        setSaveStatus('saved');
+      }
+    }
+    await gcMedia();
+    toast('Project deleted');
+    renderProjectList();
+  }
+
+  // ---- the Projects screen
+  const ago = (ts) => {
+    const s = Math.max(0, (Date.now() - ts) / 1000);
+    if (s < 60) return 'just now';
+    if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+    if (s < 86400 * 7) return `${Math.floor(s / 86400)} d ago`;
+    return new Date(ts).toLocaleDateString();
+  };
+  async function openProjects() {
+    if (state.exporting) return;
+    pause();
+    $('#projList').innerHTML = '';
+    $('#projModal').classList.remove('hidden');
+    if (save.ready && !save.restoring) await saveNow();     // so the open project's card is up to date
+    renderProjectList();
+  }
+  function closeProjects() { $('#projModal').classList.add('hidden'); }
+  async function renderProjectList() {
+    const list = $('#projList');
+    if (!list || $('#projModal').classList.contains('hidden')) return;
+    let all = [];
+    try { all = (await tx('projects', 'readonly', st => st.getAll())) || []; }
+    catch { list.innerHTML = ''; list.append(el('p', { class: 'cap-error' }, 'This browser won’t let GhostCut store projects here (private mode?).')); return; }
+    all.sort((a, b) => b.updatedAt - a.updatedAt);
+    list.innerHTML = '';
+    if (!all.length) list.append(el('p', { class: 'muted small proj-empty' }, 'Nothing saved yet. Import something and it’ll show up here.'));
+    for (const r of all) {
+      const isCur = r.id === proj.id;
+      const thumb = r.thumb ? el('img', { src: r.thumb, alt: '' }) : el('span', { class: 'proj-ph' }, '👻');
+      const name = el('div', { class: 'proj-name' }, r.name);
+      const meta = el('div', { class: 'muted small' }, [
+        r.duration ? fmt(r.duration, false) : 'empty',
+        `${r.clipCount || 0} clip${r.clipCount === 1 ? '' : 's'}`,
+        ago(r.updatedAt),
+      ].join(' · '));
+      const del = el('button', { type: 'button', title: 'Delete project', 'aria-label': `Delete ${r.name}` }, '🗑');
+      del.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (del.classList.contains('armed')) { deleteProject(r.id); return; }
+        del.classList.add('armed');
+        del.textContent = 'Delete?';
+        setTimeout(() => { if (del.isConnected) { del.classList.remove('armed'); del.textContent = '🗑'; } }, 3000);
+      });
+      const ren = el('button', { type: 'button', title: 'Rename', 'aria-label': `Rename ${r.name}` }, '✏️');
+      ren.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const input = el('input', { type: 'text', value: r.name, maxlength: 60, 'aria-label': 'Project name', class: 'proj-rename' });
+        name.replaceWith(input);
+        input.focus(); input.select();
+        let done = false;
+        const finish = (ok) => { if (done) return; done = true; if (ok && input.value.trim() && input.value.trim() !== r.name) renameProject(r.id, input.value); else renderProjectList(); };
+        input.addEventListener('keydown', (ev) => { ev.stopPropagation(); if (ev.key === 'Enter') finish(true); if (ev.key === 'Escape') finish(false); });
+        input.addEventListener('blur', () => finish(true));
+        input.addEventListener('click', ev => ev.stopPropagation());
+      });
+      const dup = el('button', { type: 'button', title: 'Duplicate', 'aria-label': `Duplicate ${r.name}` }, '⧉');
+      dup.addEventListener('click', (e) => { e.stopPropagation(); duplicateProject(r.id); });
+      const card = el('div', { class: 'proj-item' + (isCur ? ' current' : ''), role: 'button', tabindex: '0', 'data-project': r.id, 'aria-label': `Open ${r.name}` },
+        el('div', { class: 'proj-thumb' }, thumb),
+        el('div', { class: 'proj-info' }, name, meta, isCur ? el('span', { class: 'proj-badge' }, 'Editing now') : null),
+        el('div', { class: 'proj-acts' }, ren, dup, del));
+      card.addEventListener('click', () => openProject(r.id));
+      card.addEventListener('keydown', (e) => { if (e.key === 'Enter') openProject(r.id); });
+      list.append(card);
+    }
   }
 
   // ------------------------------------------------------------------
@@ -3546,6 +3804,7 @@
     state, importFiles, addMediaToTimeline, addText, splitAt, seek, play, pause, startExport, undo, redo, projectDuration,
     select, setSelection, selectAll, valAt, animFx, commit,
     selectTransition, activeTransitions, transitionTypes: () => Object.keys(TRANSITIONS),
-    saveNow, saveStatus: () => save.status, isRestoring: () => save.restoring || !save.ready,
+    saveNow, saveStatus: () => save.status, isRestoring: () => save.restoring || save.switching || !save.ready,
+    projectInfo: () => ({ ...proj }), openProjects, newProject,
   };
 })();

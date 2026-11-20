@@ -76,7 +76,11 @@ If you still get a 404 right after a deploy, your browser is showing an old copy
 - **Undo / redo** everything
 - **Autosave** 💾: your project and its files are saved on your device as you edit
   - Close the tab, lose battery or reboot: reopen GhostCut and everything comes back, playhead and all
-  - "✓ Saved" in the top bar shows it's stored; 📄 New starts a fresh project
+  - "✓ Saved" in the top bar shows it's stored
+- **Projects** 📁: keep as many projects as you like, each with its own clips, files, settings and undo
+  - Create, open, rename, duplicate and delete from the 📁 button in the top bar (it shows the open project's name)
+  - Cards show a thumbnail, length, clip count and when you last edited
+  - The site reopens the project you were last working on; files shared by duplicates are stored once
 - **Export to MP4** (H.264, in Chrome/Edge) or WebM, with audio mixed in
 
 ## Shortcuts
@@ -99,7 +103,7 @@ If you still get a 404 right after a deploy, your browser is showing an old copy
 
 - Export records in **real time**, so a 30 s video takes about 30 s. Keep the tab visible while it renders.
 - Filters need a browser with canvas filter support (Chrome, Edge, Firefox).
-- Autosave keeps one project, in this browser on this device. It doesn't sync between your phone and laptop, and clearing the browser's site data deletes it. Export anything you can't lose.
+- Projects are saved in this browser on this device. It doesn't sync between your phone and laptop, and clearing the browser's site data deletes it. Export anything you can't lose.
 - Autosave keeps a copy of your imported files, so long videos use storage space on your device. If you run out, the top bar says "⚠ Not saved".
 - Voiceover needs microphone permission. If you blocked it, allow the mic for the site from the 🔒 next to the address.
 - Auto captions need internet the first time, to download the AI library and model. After that your browser caches them.
