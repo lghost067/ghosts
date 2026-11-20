@@ -127,11 +127,12 @@
   // ------------------------------------------------------------------
   const newTrack = (kind) => ({ id: uid(), kind, clips: [], muted: false, hidden: false });
 
+  const freshProject = () => ({
+    aspect: '9:16', res: 720, bg: '#000000',
+    tracks: [newTrack('visual'), newTrack('visual'), newTrack('audio')],
+  });
   const state = {
-    project: {
-      aspect: '9:16', res: 720, bg: '#000000',
-      tracks: [newTrack('visual'), newTrack('visual'), newTrack('audio')],
-    },
+    project: freshProject(),
     media: new Map(),     // id -> media record (not serialised)
     selectedId: null,     // the "primary" selected clip (drives the inspector)
     selectedIds: new Set(),
@@ -222,6 +223,7 @@
   const undo = () => { if (history.idx > 0) restore(history.idx - 1); };
   const redo = () => { if (history.idx < history.stack.length - 1) restore(history.idx + 1); };
   function afterChange(rebuildInspector = false) {
+    scheduleSave();
     $('#undoBtn').disabled = history.idx <= 0;
     $('#redoBtn').disabled = history.idx >= history.stack.length - 1;
     gcElements();
@@ -236,7 +238,7 @@
   // ------------------------------------------------------------------
   // media import
   // ------------------------------------------------------------------
-  async function importFiles(files, { quiet = false } = {}) {
+  async function importFiles(files, { quiet = false, voiceover = false } = {}) {
     let added = 0;
     const out = [];
     for (const file of files) {
@@ -252,8 +254,10 @@
         else if (kind === 'video') await loadVideo(m);
         else await loadAudio(m);
         m.loading = false;
+        m.voiceover = voiceover;
         added++;
         out.push(m);
+        storeMediaFile(m, file);
         if (kind !== 'image' && file.size < 250e6) computeWave(m, file).then(() => renderTimeline()).catch(() => {});
       } catch (err) {
         console.warn(err);
@@ -3074,7 +3078,7 @@
     window.addEventListener('keydown', (e) => {
       const tag = (e.target.tagName || '').toLowerCase();
       if (tag === 'textarea' || (tag === 'input' && !['range', 'checkbox', 'color'].includes(e.target.type)) || tag === 'select') return;
-      if (state.exporting) return;
+      if (state.exporting || save.restoring) return;
       if (vo.phase !== 'idle') {
         if (vo.phase === 'setup') { if (e.key === 'Escape') closeVoiceover(); return; }
         if (e.key === ' ' || e.key === 'Escape') { e.preventDefault(); stopVoiceover(); }
@@ -3110,8 +3114,14 @@
     });
 
     window.addEventListener('beforeunload', (e) => {
-      if (allClips().length) { e.preventDefault(); e.returnValue = ''; }
+      if (save.status !== 'saved' && (allClips().length || state.media.size)) { saveNow(); e.preventDefault(); e.returnValue = ''; }
     });
+    // phones often kill a backgrounded tab without warning: save the moment it's hidden
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveNow(); });
+    window.addEventListener('pagehide', () => saveNow());
+    $('#newBtn').addEventListener('click', () => $('#newModal').classList.remove('hidden'));
+    $('#newCancel').addEventListener('click', () => $('#newModal').classList.add('hidden'));
+    $('#newGo').addEventListener('click', () => { $('#newModal').classList.add('hidden'); newProject(); });
   }
 
   // ------------------------------------------------------------------
@@ -3312,9 +3322,8 @@
       let k = 1;
       while (taken.has(`Voiceover ${k}.wav`)) k++;
       const file = new File([encodeWav(audio)], `Voiceover ${k}.wav`, { type: 'audio/wav' });
-      const [m] = await importFiles([file], { quiet: true });
+      const [m] = await importFiles([file], { quiet: true, voiceover: true });
       if (!m) return;
-      m.voiceover = true;
       const c = clipFromMedia(m);
       c.start = vo.t0;
       placeClip(c, 'keep');
@@ -3340,6 +3349,187 @@
   }
 
   // ------------------------------------------------------------------
+  // autosave: the project and its media files live in this browser's storage (IndexedDB)
+  // ------------------------------------------------------------------
+  const save = { status: 'saved', timer: 0, restoring: false, ready: false, persisted: false, pending: null };
+  let dbPromise = null;
+  function openDb() {
+    if (!dbPromise) {
+      dbPromise = new Promise((resolve, reject) => {
+        if (!window.indexedDB) { reject(new Error('IndexedDB unavailable')); return; }
+        let req;
+        try { req = indexedDB.open('ghostcut', 1); } catch (err) { reject(err); return; }
+        req.onupgradeneeded = () => {
+          const d = req.result;
+          if (!d.objectStoreNames.contains('media')) d.createObjectStore('media', { keyPath: 'id' });
+          if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error || new Error('IndexedDB failed to open'));
+        req.onblocked = () => reject(new Error('IndexedDB blocked'));
+      });
+      dbPromise.catch(() => {});
+    }
+    return dbPromise;
+  }
+  /** Run one IndexedDB transaction; fn(store) may return a request whose result is handed back. */
+  async function tx(storeName, mode, fn) {
+    const d = await openDb();
+    return new Promise((resolve, reject) => {
+      const t = d.transaction(storeName, mode);
+      let req;
+      try { req = fn(t.objectStore(storeName)); } catch (err) { reject(err); return; }
+      t.oncomplete = () => resolve(req && 'result' in req ? req.result : undefined);
+      t.onerror = () => reject(t.error || new Error('transaction failed'));
+      t.onabort = () => reject(t.error || new Error('transaction aborted'));
+    });
+  }
+  const isQuota = (err) => err && (err.name === 'QuotaExceededError' || /quota/i.test(err.message || ''));
+
+  function setSaveStatus(status, detail = '') {
+    save.status = status;
+    const n = $('#saveState');
+    if (!n) return;
+    const look = {
+      saved: ['✓ Saved', 'Saved on this device. Close the tab or lose battery: it’ll be here when you come back.'],
+      saving: ['Saving…', 'Saving to this device…'],
+      error: ['⚠ Not saved', detail || 'This browser won’t let GhostCut save here (private mode?). Export before you leave.'],
+    }[status];
+    n.textContent = look[0];
+    n.title = look[1];
+    n.className = 'save-state ' + status;
+  }
+
+  /** Keep a copy of an imported file so the project can be rebuilt after a reload or a dead battery. */
+  async function storeMediaFile(m, file) {
+    const rec = { id: m.id, name: m.name, kind: m.kind, type: file.type, voiceover: !!m.voiceover, added: Date.now() };
+    try {
+      await tx('media', 'readwrite', st => st.put({ ...rec, blob: file }));
+    } catch (err) {
+      if (isQuota(err)) { m.unsaved = true; toast(`Your device is out of storage space, so “${m.name}” can’t be backed up. Free up space, or export before you leave.`, 6000); setSaveStatus('error', 'Out of storage space for some files. Export before you leave.'); return; }
+      try {   // some browsers can't store File objects directly: store the bytes instead
+        const buffer = await file.arrayBuffer();
+        await tx('media', 'readwrite', st => st.put({ ...rec, buffer }));
+      } catch (err2) {
+        m.unsaved = true;
+        console.warn('could not store media', err2);
+        setSaveStatus('error', isQuota(err2) ? 'Out of storage space for some files. Export before you leave.' : undefined);
+        return;
+      }
+    }
+    if (!save.persisted && navigator.storage && navigator.storage.persist) {
+      save.persisted = true;
+      navigator.storage.persist().catch(() => {});      // ask the browser not to clear it when space is low
+    }
+    scheduleSave();
+  }
+
+  function scheduleSave() {
+    if (!save.ready || save.restoring) return;
+    if (save.status !== 'error') setSaveStatus('saving');
+    clearTimeout(save.timer);
+    save.timer = setTimeout(saveNow, 600);
+  }
+  function saveNow() {
+    if (!save.ready || save.restoring) return Promise.resolve();
+    clearTimeout(save.timer);
+    const live = [...state.media.values()].filter(m => !m.loading && !m.removed).map(m => m.id);
+    const used = [...new Set(allClips().map(c => c.mediaId).filter(Boolean))];
+    const snap = { v: 1, savedAt: Date.now(), project: JSON.parse(JSON.stringify(state.project)), time: state.time, pps: state.pps, library: live, used };
+    const keep = new Set([...live, ...used]);
+    const job = tx('kv', 'readwrite', st => st.put(snap, 'current'))
+      .then(async () => {
+        // drop stored files nothing points at any more
+        const ids = await tx('media', 'readonly', st => st.getAllKeys());
+        const stale = (ids || []).filter(id => !keep.has(id) && !state.media.has(id));
+        if (stale.length) await tx('media', 'readwrite', st => { for (const id of stale) st.delete(id); });
+        const anyUnsaved = [...state.media.values()].some(m => m.unsaved && keep.has(m.id));
+        if (anyUnsaved) setSaveStatus('error', 'Some files couldn’t be backed up (out of space). Export before you leave.');
+        else setSaveStatus('saved');
+      })
+      .catch((err) => {
+        console.warn('autosave failed', err);
+        setSaveStatus('error', isQuota(err) ? 'Your device is out of storage space. Export before you leave.' : undefined);
+      });
+    save.pending = job;
+    return job;
+  }
+
+  /** Bring back the last project (and its files) from this device. */
+  async function restoreProject() {
+    let snap = null;
+    try { snap = await tx('kv', 'readonly', st => st.get('current')); }
+    catch (err) { console.warn('restore: storage unavailable', err); setSaveStatus('error'); save.ready = true; return; }
+    const hasStuff = snap && snap.project && ((snap.library && snap.library.length) || snap.project.tracks.some(t => t.clips.length));
+    if (!hasStuff) { save.ready = true; setSaveStatus('saved'); saveNow(); return; }
+    save.restoring = true;
+    $('#restoreModal').classList.remove('hidden');
+    const ids = [...new Set([...(snap.library || []), ...(snap.used || [])])];
+    let missing = 0;
+    for (const id of ids) {
+      let rec = null;
+      try { rec = await tx('media', 'readonly', st => st.get(id)); } catch { rec = null; }
+      if (!rec || (!rec.blob && !rec.buffer)) { missing++; continue; }
+      const blob = rec.blob || new Blob([rec.buffer], { type: rec.type });
+      const m = { id, name: rec.name, kind: rec.kind, url: URL.createObjectURL(blob), duration: 0, w: 0, h: 0, thumb: null, wave: null, loading: true, voiceover: !!rec.voiceover };
+      m.removed = !(snap.library || []).includes(id);     // used by clips but deleted from the library
+      state.media.set(id, m);
+      $('#restoreDetail').textContent = rec.name;
+      try {
+        if (m.kind === 'image') await loadImage(m);
+        else if (m.kind === 'video') await loadVideo(m);
+        else await loadAudio(m);
+        m.loading = false;
+        if (m.kind !== 'image' && blob.size < 250e6) computeWave(m, blob).then(() => renderTimeline()).catch(() => {});
+      } catch (err) {
+        console.warn('restore: could not load', rec.name, err);
+        URL.revokeObjectURL(m.url);
+        state.media.delete(id);
+        missing++;
+      }
+    }
+    state.project = snap.project;
+    history.stack = [JSON.stringify(state.project)];
+    history.idx = 0;
+    state.selectedIds = new Set(); state.selectedId = null; state.selectedTrans = null;
+    if (snap.pps) state.pps = clamp(snap.pps, 10, 400);
+    renderMediaGrid();
+    syncTopbar();
+    afterChange(true);
+    $('#zoomRange').value = state.pps;
+    seek(snap.time || 0);
+    save.restoring = false;
+    save.ready = true;
+    $('#restoreModal').classList.add('hidden');
+    setSaveStatus('saved');
+    saveNow();          // also clears out stored files the project no longer uses
+    const when = new Date(snap.savedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+    toast(missing
+      ? `Restored your project (saved ${when}). ${missing} file${missing > 1 ? 's were' : ' was'} missing; re-import ${missing > 1 ? 'them' : 'it'}.`
+      : `Welcome back 👻 Restored your project from ${when}`, 5000);
+  }
+
+  async function newProject() {
+    pause();
+    setSaveStatus('saving');
+    for (const m of state.media.values()) { try { URL.revokeObjectURL(m.url); } catch { /* ignore */ } }
+    state.media.clear();
+    for (const id of [...els.keys()]) disposeEl(id);
+    state.project = freshProject();
+    state.selectedIds = new Set(); state.selectedId = null; state.selectedTrans = null;
+    state.time = 0;
+    history.stack = [JSON.stringify(state.project)];
+    history.idx = 0;
+    renderMediaGrid();
+    syncTopbar();
+    afterChange(true);
+    seek(0);
+    // write the empty project right away (no debounce), which also deletes every stored file
+    await saveNow();
+    toast('Fresh project ✨');
+  }
+
+  // ------------------------------------------------------------------
   // boot
   // ------------------------------------------------------------------
   buildLeftPanels();
@@ -3349,11 +3539,13 @@
   renderMediaGrid();
   renderInspector();
   commit();
+  restoreProject();
 
   // tiny hook for automated tests / power users poking around in devtools
   window.GhostCut = {
     state, importFiles, addMediaToTimeline, addText, splitAt, seek, play, pause, startExport, undo, redo, projectDuration,
     select, setSelection, selectAll, valAt, animFx, commit,
     selectTransition, activeTransitions, transitionTypes: () => Object.keys(TRANSITIONS),
+    saveNow, saveStatus: () => save.status, isRestoring: () => save.restoring || !save.ready,
   };
 })();

@@ -415,3 +415,10 @@ kbd { background: var(--panel-2); border: 1px solid var(--line); border-bottom-w
 @keyframes recblink { 50% { opacity: .2; } }
 .rec-meter { width: 46px; height: 6px; border-radius: 6px; background: #ffffff22; overflow: hidden; }
 .rec-stop { color: #fda4af; font-weight: 600; }
+
+/* ---------- autosave ---------- */
+.save-state { font-size: 11px; font-weight: 600; letter-spacing: 0; padding: 2px 8px; border-radius: 999px; white-space: nowrap; cursor: default; }
+.save-state.saved { color: #86efac; background: #22c55e1a; }
+.save-state.saving { color: var(--muted); background: var(--panel-2); }
+.save-state.error { color: #fda4af; background: #f43f5e22; }
+button.primary.danger { background: #e11d48; border-color: #e11d48; }

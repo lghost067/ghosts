@@ -74,6 +74,9 @@ If you still get a 404 right after a deploy, your browser is showing an old copy
 - **Track controls**: mute and hide per track
 - **Aspect ratios**: 9:16, 16:9, 1:1, 4:5, 3:4 · 720p / 1080p · custom background colour
 - **Undo / redo** everything
+- **Autosave** 💾: your project and its files are saved on your device as you edit
+  - Close the tab, lose battery or reboot: reopen GhostCut and everything comes back, playhead and all
+  - "✓ Saved" in the top bar shows it's stored; 📄 New starts a fresh project
 - **Export to MP4** (H.264, in Chrome/Edge) or WebM, with audio mixed in
 
 ## Shortcuts
@@ -96,7 +99,8 @@ If you still get a 404 right after a deploy, your browser is showing an old copy
 
 - Export records in **real time**, so a 30 s video takes about 30 s. Keep the tab visible while it renders.
 - Filters need a browser with canvas filter support (Chrome, Edge, Firefox).
-- Projects aren't saved when you close the tab, so export before you leave.
+- Autosave keeps one project, in this browser on this device. It doesn't sync between your phone and laptop, and clearing the browser's site data deletes it. Export anything you can't lose.
+- Autosave keeps a copy of your imported files, so long videos use storage space on your device. If you run out, the top bar says "⚠ Not saved".
 - Voiceover needs microphone permission. If you blocked it, allow the mic for the site from the 🔒 next to the address.
 - Auto captions need internet the first time, to download the AI library and model. After that your browser caches them.
 - `dist/ghostcut.html` is an older single-file snapshot made for claude.ai hosting. It has no auto captions, keyframes, animations or multi-select, so use the GitHub Pages version.
