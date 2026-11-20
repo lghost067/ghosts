@@ -242,6 +242,7 @@
     let added = 0;
     const out = [];
     for (const file of files) {
+      if (/\.ghostcut$/i.test(file.name)) { importProjectFile(file); continue; }
       const kind = file.type.startsWith('video/') ? 'video'
         : file.type.startsWith('image/') ? 'image'
         : file.type.startsWith('audio/') ? 'audio' : null;
@@ -3079,6 +3080,7 @@
       const tag = (e.target.tagName || '').toLowerCase();
       if (tag === 'textarea' || (tag === 'input' && !['range', 'checkbox', 'color'].includes(e.target.type)) || tag === 'select') return;
       if (state.exporting || save.restoring || save.switching) return;
+      if (!$('#shareModal').classList.contains('hidden')) { if (e.key === 'Escape') closeShareModal(); return; }
       if (!$('#projModal').classList.contains('hidden')) { if (e.key === 'Escape') closeProjects(); return; }
       if (vo.phase !== 'idle') {
         if (vo.phase === 'setup') { if (e.key === 'Escape') closeVoiceover(); return; }
@@ -3121,6 +3123,11 @@
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveNow(); });
     window.addEventListener('pagehide', () => saveNow());
     $('#projBtn').addEventListener('click', openProjects);
+    $('#projImport').addEventListener('click', () => $('#projFileInput').click());
+    $('#projFileInput').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importProjectFile(f); });
+    $('#shareDownload').addEventListener('click', downloadProjectFile);
+    $('#shareSend').addEventListener('click', shareProjectFile);
+    $('#shareClose').addEventListener('click', closeShareModal);
     $('#projClose').addEventListener('click', closeProjects);
     $('#projNew').addEventListener('click', () => { closeProjects(); newProject(); });
     $('#projModal').addEventListener('click', (e) => { if (e.target.id === 'projModal') closeProjects(); });
@@ -3528,6 +3535,7 @@
     const library = rec.library || [];
     const ids = [...new Set([...library, ...(rec.used || [])])];
     let missing = 0;
+    const unplayable = [];
     for (const id of ids) {
       let m0 = null;
       try { m0 = await tx('media', 'readonly', st => st.get(id)); } catch { m0 = null; }
@@ -3547,7 +3555,7 @@
         console.warn('restore: could not load', m0.name, err);
         URL.revokeObjectURL(m.url);
         state.media.delete(id);
-        missing++;
+        unplayable.push(m0.name);
       }
     }
     proj = { id: rec.id, name: rec.name || 'Untitled', createdAt: rec.createdAt || Date.now(), stored: true, updatedAt: rec.updatedAt };
@@ -3562,9 +3570,12 @@
     $('#zoomRange').value = state.pps;
     seek(rec.time || 0);
     $('#restoreModal').classList.add('hidden');
-    proj.sig = missing ? null : JSON.stringify([state.project, liveMediaIds(), proj.name]);
+    proj.sig = missing || unplayable.length ? null : JSON.stringify([state.project, liveMediaIds(), proj.name]);
     if (!proj.sig) proj.updatedAt = rec.updatedAt;
     try { await tx('kv', 'readwrite', st => st.put(rec.id, 'currentId')); } catch { /* ignore */ }
+    if (unplayable.length) {
+      toast(`This device can’t play ${unplayable.map(n => `“${n}”`).join(', ')} (its video/audio format isn’t supported here). The rest of the project is fine; re-import a compatible copy (e.g. MP4/H.264) to fix it.`, 9000);
+    }
     return missing;
   }
   const missingNote = (n) => (n ? ` ${n} file${n > 1 ? 's were' : ' was'} missing; re-import ${n > 1 ? 'them' : 'it'}.` : '');
@@ -3775,16 +3786,177 @@
         input.addEventListener('blur', () => finish(true));
         input.addEventListener('click', ev => ev.stopPropagation());
       });
+      const exp = el('button', { type: 'button', title: 'Save as a file (to move it to another device)', 'aria-label': `Save ${r.name} as a file` }, '📤');
+      exp.addEventListener('click', (e) => { e.stopPropagation(); openShareModal(r.id); });
       const dup = el('button', { type: 'button', title: 'Duplicate', 'aria-label': `Duplicate ${r.name}` }, '⧉');
       dup.addEventListener('click', (e) => { e.stopPropagation(); duplicateProject(r.id); });
       const card = el('div', { class: 'proj-item' + (isCur ? ' current' : ''), role: 'button', tabindex: '0', 'data-project': r.id, 'aria-label': `Open ${r.name}` },
         el('div', { class: 'proj-thumb' }, thumb),
         el('div', { class: 'proj-info' }, name, meta, isCur ? el('span', { class: 'proj-badge' }, 'Editing now') : null),
-        el('div', { class: 'proj-acts' }, ren, dup, del));
+        el('div', { class: 'proj-acts' }, exp, ren, dup, del));
       card.addEventListener('click', () => openProject(r.id));
       card.addEventListener('keydown', (e) => { if (e.key === 'Enter') openProject(r.id); });
       list.append(card);
     }
+  }
+
+  // ------------------------------------------------------------------
+  // project files (.ghostcut): one file with the project and all its media, to move between devices
+  //   bytes 0-7 "GHOSTCUT" · 8-11 format version · 12-15 manifest length · manifest JSON · media bytes back to back
+  // ------------------------------------------------------------------
+  const PF_MAGIC = 'GHOSTCUT', PF_VERSION = 1, PF_HEAD = 16;
+  const safeFileName = (n) => (String(n || '').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '-').replace(/^[\s.]+|[\s.]+$/g, '').slice(0, 80) || 'project');
+  const mb = (n) => (n >= 1e9 ? (n / 1e9).toFixed(2) + ' GB' : n >= 1e6 ? (n / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1e3)) + ' kB');
+
+  /** Build the .ghostcut file for a stored project. Media blobs are referenced, not copied into memory. */
+  async function buildProjectFile(id) {
+    if (id === proj.id) await saveNow({ force: true });
+    const rec = await tx('projects', 'readonly', st => st.get(id));
+    if (!rec) throw new Error('project not found');
+    const ids = [...new Set([...(rec.library || []), ...(rec.used || [])])];
+    const media = [], parts = [];
+    let offset = 0, missing = 0;
+    for (const mid of ids) {
+      let blob = null, meta = null;
+      try {
+        const m0 = await tx('media', 'readonly', st => st.get(mid));
+        if (m0 && (m0.blob || m0.buffer)) { blob = m0.blob || new Blob([m0.buffer], { type: m0.type }); meta = m0; }
+      } catch { /* fall through */ }
+      if (!blob && id === proj.id && state.media.has(mid)) {      // not backed up (out of space) but open right now
+        const m = state.media.get(mid);
+        try { blob = await (await fetch(m.url)).blob(); meta = { name: m.name, kind: m.kind, type: blob.type, voiceover: m.voiceover }; } catch { blob = null; }
+      }
+      if (!blob) { missing++; continue; }
+      const live = id === proj.id ? state.media.get(mid) : null;      // what's open on screen is the most up to date
+      media.push({ id: mid, name: meta.name, kind: meta.kind, type: meta.type || blob.type || '', voiceover: !!(live ? live.voiceover : meta.voiceover), offset, size: blob.size });
+      parts.push(blob);
+      offset += blob.size;
+    }
+    const manifest = {
+      app: 'GhostCut', format: PF_VERSION, exportedAt: Date.now(),
+      name: rec.name, createdAt: rec.createdAt, project: rec.project, time: rec.time, pps: rec.pps,
+      library: rec.library || [], used: rec.used || [], thumb: rec.thumb || null, duration: rec.duration, clipCount: rec.clipCount, media,
+    };
+    const json = new TextEncoder().encode(JSON.stringify(manifest));
+    const head = new Uint8Array(PF_HEAD);
+    for (let i = 0; i < 8; i++) head[i] = PF_MAGIC.charCodeAt(i);
+    const dv = new DataView(head.buffer);
+    dv.setUint32(8, PF_VERSION, true);
+    dv.setUint32(12, json.length, true);
+    const blob = new Blob([head, json, ...parts], { type: 'application/octet-stream' });
+    return { blob, name: rec.name, filename: `${safeFileName(rec.name)}.ghostcut`, files: media.length, missing };
+  }
+
+  let shareFile = null;
+  async function openShareModal(id) {
+    let built;
+    try { built = await buildProjectFile(id); }
+    catch (err) { toast('Couldn’t make the project file: ' + ((err && err.message) || err), 5000); return; }
+    shareFile = built;
+    $('#shareTitle').textContent = `📤 “${built.name}” as a file`;
+    $('#shareInfo').textContent = `${built.filename} · ${mb(built.blob.size)} · ${built.files} media file${built.files === 1 ? '' : 's'} inside`
+      + (built.missing ? ` · ${built.missing} file${built.missing === 1 ? ' is' : 's are'} missing and won’t be included` : '');
+    let canShare = false;
+    try {
+      const f = new File([built.blob], built.filename, { type: 'application/octet-stream' });
+      canShare = !!(navigator.canShare && navigator.share && navigator.canShare({ files: [f] }));
+    } catch { canShare = false; }
+    $('#shareSend').classList.toggle('hidden', !canShare);
+    $('#shareModal').classList.remove('hidden');
+  }
+  function closeShareModal() { $('#shareModal').classList.add('hidden'); shareFile = null; }
+  async function downloadProjectFile() {
+    if (!shareFile) return;
+    const { blob, filename } = shareFile;
+    let dl = null;
+    if (window.claude && typeof window.claude.use === 'function') { try { dl = await window.claude.use('downloads'); } catch { dl = null; } }
+    if (dl) {
+      try { await dl.save({ filename, data: blob }); toast(`Saved ${filename}`); } catch { toast('Save cancelled'); }
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = el('a', { href: url, download: filename });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 120000);
+    toast(`Downloading ${filename} (${mb(blob.size)}) 📦`);
+  }
+  async function shareProjectFile() {
+    if (!shareFile) return;
+    const f = new File([shareFile.blob], shareFile.filename, { type: 'application/octet-stream' });
+    try {
+      await navigator.share({ files: [f], title: shareFile.name });
+    } catch (err) {
+      if (err && err.name === 'AbortError') return;       // closed the share sheet
+      toast('Sharing didn’t work here, so it’s downloading instead');
+      downloadProjectFile();
+    }
+  }
+
+  /** Read a .ghostcut file and add it as a new project (it never overwrites one you already have). */
+  async function importProjectFile(file) {
+    if (busyForSwitch() || save.switching) return;
+    closeProjects();
+    return switching('Opening project file 📦', async () => {
+      let manifest, dataStart;
+      try {
+        const head = new DataView(await file.slice(0, PF_HEAD).arrayBuffer());
+        let magic = '';
+        for (let i = 0; i < 8 && i < head.byteLength; i++) magic += String.fromCharCode(head.getUint8(i));
+        if (head.byteLength < PF_HEAD || magic !== PF_MAGIC) throw new Error('notours');
+        const version = head.getUint32(8, true), len = head.getUint32(12, true);
+        if (version > PF_VERSION) throw new Error('newer');
+        if (!len || PF_HEAD + len > file.size) throw new Error('broken');
+        manifest = JSON.parse(new TextDecoder().decode(await file.slice(PF_HEAD, PF_HEAD + len).arrayBuffer()));
+        if (!manifest || !manifest.project || !Array.isArray(manifest.project.tracks) || !Array.isArray(manifest.media)) throw new Error('broken');
+        dataStart = PF_HEAD + len;
+        for (const m of manifest.media) if (!(m.offset >= 0 && m.size >= 0 && dataStart + m.offset + m.size <= file.size)) throw new Error('broken');
+      } catch (err) {
+        const why = err.message === 'notours' ? `“${file.name}” isn’t a GhostCut project file.`
+          : err.message === 'newer' ? 'This project file was made by a newer GhostCut. Refresh the page to update, then try again.'
+          : `“${file.name}” is damaged or incomplete (maybe it didn’t finish downloading). Save it again from the other device.`;
+        toast(why, 7000);
+        return;
+      }
+      await saveNow();
+      // fresh ids so importing the same file twice gives two independent projects
+      const idMap = new Map();
+      try {
+        for (const m of manifest.media) {
+          const nid = uid();
+          idMap.set(m.id, nid);
+          const blob = file.slice(dataStart + m.offset, dataStart + m.offset + m.size, m.type || '');
+          $('#restoreDetail').textContent = m.name;
+          await tx('media', 'readwrite', st => st.put({ id: nid, name: m.name, kind: m.kind, type: m.type, voiceover: !!m.voiceover, added: Date.now(), blob }));
+        }
+      } catch (err) {
+        for (const nid of idMap.values()) { try { await tx('media', 'readwrite', st => st.delete(nid)); } catch { /* ignore */ } }
+        toast(isQuota(err) ? 'Not enough storage space on this device to open that project. Free some space and try again.'
+          : 'This browser won’t store projects here (private mode?), so the file can’t be opened.', 7000);
+        return;
+      }
+      const mapId = (x) => idMap.get(x) || x;
+      const project = manifest.project;
+      for (const t of project.tracks) for (const c of t.clips || []) if (c.mediaId) c.mediaId = mapId(c.mediaId);
+      let names = new Set();
+      try { names = new Set(((await tx('projects', 'readonly', st => st.getAll())) || []).map(r => r.name)); } catch { /* ignore */ }
+      const base = String(manifest.name || 'Imported project').slice(0, 60);
+      let name = base, n = 2;
+      while (names.has(name)) name = `${base} (${n++})`;
+      const rec = {
+        id: uid(), name, createdAt: manifest.createdAt || Date.now(), updatedAt: Date.now(),
+        project, time: manifest.time || 0, pps: manifest.pps || 80,
+        library: (manifest.library || []).map(mapId), used: (manifest.used || []).map(mapId),
+        thumb: typeof manifest.thumb === 'string' && manifest.thumb.startsWith('data:image/') ? manifest.thumb : null,
+        duration: manifest.duration || 0, clipCount: manifest.clipCount || 0,
+      };
+      try { await tx('projects', 'readwrite', st => st.put(rec)); }
+      catch (err) { toast('Couldn’t save the imported project: ' + err.message, 6000); return; }
+      clearWorkspace();
+      const missing = await loadProject(rec);
+      setSaveStatus('saved');
+      gcMedia();
+      toast(`📦 Opened “${name}” from the file. It’s saved on this device now.${missingNote(missing)}`, 5000);
+    });
   }
 
   // ------------------------------------------------------------------
@@ -3805,6 +3977,6 @@
     select, setSelection, selectAll, valAt, animFx, commit,
     selectTransition, activeTransitions, transitionTypes: () => Object.keys(TRANSITIONS),
     saveNow, saveStatus: () => save.status, isRestoring: () => save.restoring || save.switching || !save.ready,
-    projectInfo: () => ({ ...proj }), openProjects, newProject,
+    projectInfo: () => ({ ...proj }), openProjects, newProject, importProjectFile,
   };
 })();

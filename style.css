@@ -452,3 +452,10 @@ kbd { background: var(--panel-2); border: 1px solid var(--line); border-bottom-w
   .proj-thumb { width: 72px; height: 48px; }
   .proj-acts { grid-column: 1 / -1; justify-content: flex-end; }
 }
+
+/* ---------- project files ---------- */
+.proj-head-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.share-card { text-align: left; width: min(480px, 94vw); display: grid; gap: 10px; }
+.share-card h2, .share-card p { margin: 0; overflow-wrap: anywhere; }
+.share-steps { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 13px; line-height: 1.45; }
+.share-card .cap-actions { flex-wrap: wrap; }

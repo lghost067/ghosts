@@ -6,7 +6,7 @@
   <title>GhostCut — free video editor</title>
   <meta name="description" content="A free, private, in-browser video editor. No uploads, no watermark, no subscription.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👻</text></svg>">
-  <link rel="stylesheet" href="style.css?v=10">
+  <link rel="stylesheet" href="style.css?v=11">
 </head>
 <body>
   <header class="topbar">
@@ -162,11 +162,32 @@
     <div class="modal-card proj-card">
       <div class="proj-head">
         <h2 id="projTitle">📁 Your projects</h2>
-        <button type="button" class="primary" id="projNew">＋ New project</button>
+        <div class="proj-head-acts">
+          <button type="button" id="projImport" title="Open a .ghostcut file saved on another device">📥 Open file</button>
+          <button type="button" class="primary" id="projNew">＋ New project</button>
+        </div>
+        <input type="file" id="projFileInput" hidden>
       </div>
-      <p class="muted small">Saved on this device as you edit. Tap one to open it.</p>
+      <p class="muted small">Saved on this device as you edit. Tap one to open it. To move one to another device, tap 📤 to save it as a file.</p>
       <div class="proj-list" id="projList"></div>
       <div class="cap-actions"><button type="button" id="projClose">Close</button></div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="shareModal" role="dialog" aria-modal="true" aria-labelledby="shareTitle">
+    <div class="modal-card share-card">
+      <h2 id="shareTitle">📤 Project file</h2>
+      <p class="muted small" id="shareInfo"></p>
+      <ol class="share-steps">
+        <li><b>Get the file to your other device:</b> download it and send it to yourself (Google Drive, iCloud, email, WhatsApp, USB), or use Share for AirDrop and friends.</li>
+        <li><b>On the other device:</b> open GhostCut → 📁 Projects → 📥 Open file → pick it.</li>
+        <li>It opens as a new project there, with all its clips, text, effects and media. Your copy here stays as it is.</li>
+      </ol>
+      <div class="cap-actions">
+        <button type="button" id="shareClose">Close</button>
+        <button type="button" class="hidden" id="shareSend">📤 Share…</button>
+        <button type="button" class="primary" id="shareDownload">⬇ Download file</button>
+      </div>
     </div>
   </div>
 
@@ -232,6 +253,6 @@
   <div class="toast-wrap" id="toasts"></div>
   <div id="mediaHolder" aria-hidden="true"></div>
 
-  <script src="app.js?v=10"></script>
+  <script src="app.js?v=11"></script>
 </body>
 </html>
