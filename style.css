@@ -149,7 +149,7 @@ input[type="range"] { accent-color: var(--accent); width: 100%; }
 /* ---------- preview ---------- */
 .preview { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #09090d; }
 .stage-wrap {
-  flex: 1; min-height: 0; display: grid; place-items: center; padding: 14px;
+  flex: 1; min-height: 0; display: grid; place-items: center; padding: 14px; position: relative;
   background:
     radial-gradient(circle at 50% 40%, #1a1a26 0, #09090d 70%);
 }
@@ -390,3 +390,28 @@ kbd { background: var(--panel-2); border: 1px solid var(--line); border-bottom-w
 
 .tr-howto { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
 .tr-howto button { margin-top: 6px; }
+
+/* ---------- voiceover ---------- */
+.vo-card { text-align: left; width: min(440px, 94vw); display: grid; gap: 10px; }
+.vo-card h2, .vo-card p { margin: 0; }
+.vo-meter { height: 10px; border-radius: 10px; background: var(--panel-2); overflow: hidden; }
+.vo-level { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #22c55e, #facc15 70%, #ef4444); transition: width .06s linear; }
+.vo-check { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; cursor: pointer; }
+.vo-check input { margin-top: 3px; }
+#voBtn.rec-live { background: #e11d48; border-color: #fb7185; color: #fff; animation: recpulse 1.2s ease-in-out infinite; }
+@keyframes recpulse { 50% { box-shadow: 0 0 0 4px #e11d4844; } }
+.rec-overlay { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; z-index: 3; }
+.rec-countdown { display: grid; justify-items: center; gap: 8px; padding: 18px 26px; border-radius: 18px; background: #000c; pointer-events: auto; text-align: center; }
+.rec-countdown p { margin: 0; font-size: 12px; color: var(--muted); }
+.rec-count { font-size: 64px; font-weight: 800; line-height: 1; color: #fff; }
+.rec-overlay.recording .rec-countdown { display: none; }
+.rec-pill { display: none; }
+.rec-overlay.recording .rec-pill {
+  display: flex; align-items: center; gap: 8px; position: absolute; top: max(10px, env(safe-area-inset-top, 0px)); left: 50%; transform: translateX(-50%);
+  pointer-events: auto; padding: 6px 12px; border-radius: 999px; background: #000d; border: 1px solid #e11d48; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.rec-overlay.recording .rec-pill:active { transform: translateX(-50%) scale(.97); }
+.rec-dot { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; animation: recblink 1s steps(2) infinite; }
+@keyframes recblink { 50% { opacity: .2; } }
+.rec-meter { width: 46px; height: 6px; border-radius: 6px; background: #ffffff22; overflow: hidden; }
+.rec-stop { color: #fda4af; font-weight: 600; }

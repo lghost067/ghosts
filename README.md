@@ -62,6 +62,10 @@ If you still get a 404 right after a deploy, your browser is showing an old copy
   - Video keeps playing through the transition on both sides, and transitions export like everything else
 - **Multi-select**: Shift/Ctrl+click, box-select on the timeline, Ctrl+A, or the ☑ Multi-select button on phones
   - Move, split, duplicate, delete, animate, filter, speed, volume and fade a whole group at once
+- **Voiceover** 🎙: record straight from your mic while the timeline plays
+  - Mic picker and level meter to check it works, then a 3-2-1 countdown
+  - The take lands on an audio track exactly where you started, so it lines up with the picture
+  - Option to hear the video while you talk (use headphones), and voiceovers are ticked by default in Auto captions
 - **Stickers**: a pile of emoji 💀🔥✨
 - **Filters**: Vivid, B&W, Vintage, Warm, Cool, Drama, Dreamy, plus manual brightness, contrast, saturation, hue, sepia and blur
 - **Transform**: drag and scale right on the preview (with centre snapping), plus rotation, opacity and fit/fill
@@ -76,7 +80,7 @@ If you still get a 404 right after a deploy, your browser is showing an old copy
 
 | Key | Action |
 | --- | --- |
-| Space | Play / pause |
+| Space | Play / pause (stops a voiceover take while recording) |
 | S or Ctrl+B | Split at playhead |
 | D | Duplicate |
 | Delete | Delete selected (or the selected transition) |
@@ -93,6 +97,7 @@ If you still get a 404 right after a deploy, your browser is showing an old copy
 - Export records in **real time**, so a 30 s video takes about 30 s. Keep the tab visible while it renders.
 - Filters need a browser with canvas filter support (Chrome, Edge, Firefox).
 - Projects aren't saved when you close the tab, so export before you leave.
+- Voiceover needs microphone permission. If you blocked it, allow the mic for the site from the 🔒 next to the address.
 - Auto captions need internet the first time, to download the AI library and model. After that your browser caches them.
 - `dist/ghostcut.html` is an older single-file snapshot made for claude.ai hosting. It has no auto captions, keyframes, animations or multi-select, so use the GitHub Pages version.
 

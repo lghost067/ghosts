@@ -236,8 +236,9 @@
   // ------------------------------------------------------------------
   // media import
   // ------------------------------------------------------------------
-  async function importFiles(files) {
+  async function importFiles(files, { quiet = false } = {}) {
     let added = 0;
+    const out = [];
     for (const file of files) {
       const kind = file.type.startsWith('video/') ? 'video'
         : file.type.startsWith('image/') ? 'image'
@@ -252,6 +253,7 @@
         else await loadAudio(m);
         m.loading = false;
         added++;
+        out.push(m);
         if (kind !== 'image' && file.size < 250e6) computeWave(m, file).then(() => renderTimeline()).catch(() => {});
       } catch (err) {
         console.warn(err);
@@ -261,7 +263,8 @@
       }
       renderMediaGrid();
     }
-    if (added) toast(`Imported ${added} file${added > 1 ? 's' : ''} — hit ＋ to drop it on the timeline`);
+    if (added && !quiet) toast(`Imported ${added} file${added > 1 ? 's' : ''} — hit ＋ to drop it on the timeline`);
+    return out;
   }
 
   async function loadImage(m) {
@@ -1361,6 +1364,7 @@
 
   async function startExport() {
     const dur = projectDuration();
+    if (vo.phase !== 'idle') { toast('Finish the voiceover first'); return; }
     if (dur <= 0) { toast('Nothing to export yet — add some clips first'); return; }
     const mime = pickMime();
     if (!mime || !canvas.captureStream) { toast('Your browser can’t record video. Try Chrome, Edge or Firefox.'); return; }
@@ -2799,7 +2803,7 @@
   }
 
   function openCaptionModal() {
-    if (state.exporting) return;
+    if (state.exporting || vo.phase !== 'idle') return;
     pause();
     const list = $('#capSources');
     list.innerHTML = '';
@@ -2810,7 +2814,7 @@
       const m = state.media.get(c.mediaId);
       const box = el('input', { type: 'checkbox', value: c.id });
       // music files usually shouldn't be captioned, so audio clips start unticked when there's video
-      box.checked = c.type === 'video' || !hasVideo;
+      box.checked = c.type === 'video' || !hasVideo || !!m.voiceover;
       list.append(el('label', {}, box, el('span', { title: m.name }, `${c.type === 'video' ? '🎬' : '🎵'} ${m.name}`),
         el('em', {}, `${fmt(c.start, false)}–${fmt(clipEnd(c), false)}`)));
     }
@@ -3034,6 +3038,17 @@
     $('#delBtn').addEventListener('click', deleteSelected);
     $('#addVTrackBtn').addEventListener('click', () => { insertTrack('visual', true); commit(); });
     $('#addATrackBtn').addEventListener('click', () => { insertTrack('audio'); commit(); });
+    $('#voBtn').addEventListener('click', () => (vo.phase === 'idle' ? openVoiceover() : stopVoiceover()));
+    $('#voCancel').addEventListener('click', closeVoiceover);
+    $('#voGo').addEventListener('click', startVoiceover);
+    $('#recPill').addEventListener('click', stopVoiceover);
+    $('#recCancel').addEventListener('click', cancelCountdown);
+    $('#voMic').addEventListener('change', async (e) => {
+      $('#voGo').disabled = true;
+      voError('');
+      try { await openMic(e.target.value); } catch (err) { voError(micErrorText(err)); return; }
+      if (vo.phase === 'setup') $('#voGo').disabled = false;
+    });
     $('#snapChk').addEventListener('change', (e) => { state.snap = e.target.checked; });
     $('#multiBtn').addEventListener('click', (e) => {
       state.multiMode = !state.multiMode;
@@ -3060,6 +3075,11 @@
       const tag = (e.target.tagName || '').toLowerCase();
       if (tag === 'textarea' || (tag === 'input' && !['range', 'checkbox', 'color'].includes(e.target.type)) || tag === 'select') return;
       if (state.exporting) return;
+      if (vo.phase !== 'idle') {
+        if (vo.phase === 'setup') { if (e.key === 'Escape') closeVoiceover(); return; }
+        if (e.key === ' ' || e.key === 'Escape') { e.preventDefault(); stopVoiceover(); }
+        return;
+      }
       if (!$('#captionModal').classList.contains('hidden')) {
         if (e.key === 'Escape' && !capBusy) closeCaptionModal();
         return;
@@ -3092,6 +3112,231 @@
     window.addEventListener('beforeunload', (e) => {
       if (allClips().length) { e.preventDefault(); e.returnValue = ''; }
     });
+  }
+
+  // ------------------------------------------------------------------
+  // voiceover: record the mic while the timeline plays, then drop it on an audio track
+  // ------------------------------------------------------------------
+  const vo = { stream: null, meterSrc: null, analyser: null, meterRaf: 0, rec: null, chunks: [], t0: 0, wall0: 0, countdown: 0, phase: 'idle' };
+  const VO_MIME = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+  const voPrefs = (() => { try { return JSON.parse(localStorage.getItem('ghostcut.vo') || '{}'); } catch { return {}; } })();
+  const saveVoPrefs = () => { try { localStorage.setItem('ghostcut.vo', JSON.stringify(voPrefs)); } catch { /* ignore */ } };
+
+  function voError(msg) {
+    const e = $('#voError');
+    e.textContent = msg || '';
+    e.classList.toggle('hidden', !msg);
+  }
+  function micErrorText(err) {
+    const n = err && err.name;
+    if (n === 'NotAllowedError' || n === 'SecurityError') return 'Microphone access is blocked. Allow the mic for this site (tap the 🔒 or ⓘ next to the address), then try again.';
+    if (n === 'NotFoundError' || n === 'OverconstrainedError') return 'No microphone found. Plug one in (or pick another) and try again.';
+    if (n === 'NotReadableError') return 'Your mic is busy in another app. Close that app and try again.';
+    if (n === 'NotSupportedError' || n === 'TypeError') return 'This browser won’t let the page use a microphone here. Check the site’s mic permission, or try Chrome, Edge or Safari over https.';
+    return 'Couldn’t open the microphone: ' + ((err && err.message) || err);
+  }
+  function stopMicStream() {
+    cancelAnimationFrame(vo.meterRaf);
+    vo.meterRaf = 0;
+    try { vo.meterSrc && vo.meterSrc.disconnect(); } catch { /* ignore */ }
+    vo.meterSrc = null; vo.analyser = null;
+    if (vo.stream) for (const tr of vo.stream.getTracks()) tr.stop();
+    vo.stream = null;
+  }
+  /** Open the chosen mic and drive the level meters (the mic is never routed to the speakers or the export). */
+  async function openMic(deviceId) {
+    stopMicStream();
+    const audio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+    if (deviceId) audio.deviceId = { exact: deviceId };
+    const stream = await navigator.mediaDevices.getUserMedia({ audio });
+    vo.stream = stream;
+    const ac = ensureAudio();
+    if (ac) {
+      vo.analyser = ac.createAnalyser();
+      vo.analyser.fftSize = 1024;
+      vo.meterSrc = ac.createMediaStreamSource(stream);
+      vo.meterSrc.connect(vo.analyser);
+      const data = new Uint8Array(vo.analyser.fftSize);
+      const tick = () => {
+        if (!vo.analyser) return;
+        vo.analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (const v of data) { const x = (v - 128) / 128; sum += x * x; }
+        const level = Math.min(1, Math.sqrt(sum / data.length) * 4);
+        for (const bar of $$('.vo-level')) bar.style.width = (level * 100).toFixed(0) + '%';
+        if (vo.phase === 'setup' && level > 0.08) $('#voStatus').textContent = '✅ Your mic works. Hit record when you’re ready.';
+        vo.meterRaf = requestAnimationFrame(tick);
+      };
+      tick();
+    }
+    // labels only show up once permission is granted
+    try {
+      const mics = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput');
+      const sel = $('#voMic');
+      const current = stream.getAudioTracks()[0] && stream.getAudioTracks()[0].getSettings().deviceId;
+      sel.innerHTML = '';
+      mics.forEach((d, i) => sel.append(el('option', { value: d.deviceId, selected: d.deviceId === current }, d.label || `Microphone ${i + 1}`)));
+      sel.disabled = mics.length < 2;
+    } catch { /* ignore */ }
+  }
+
+  async function openVoiceover() {
+    if (state.exporting || vo.phase !== 'idle') return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+      toast('Your browser can’t record audio here. Try Chrome, Edge, Firefox or Safari over https.', 4500);
+      return;
+    }
+    pause();
+    vo.phase = 'setup';
+    $('#voWhere').textContent = `Records from the playhead (${fmt(state.time)}) after a 3-second countdown. The timeline plays along so you can talk over it.`;
+    $('#voHear').checked = !!voPrefs.hear;
+    $('#voStatus').textContent = 'Say something to test your mic…';
+    voError('');
+    $('#voGo').disabled = true;
+    $('#voModal').classList.remove('hidden');
+    try {
+      await openMic(voPrefs.mic);
+    } catch (err) {
+      if (voPrefs.mic) {      // the saved mic is gone: fall back to the default one
+        try { voPrefs.mic = ''; await openMic(''); } catch (err2) { voError(micErrorText(err2)); return; }
+      } else { voError(micErrorText(err)); return; }
+    }
+    if (vo.phase === 'setup') $('#voGo').disabled = false;
+  }
+  function closeVoiceover() {
+    if (vo.phase !== 'setup') return;
+    vo.phase = 'idle';
+    $('#voModal').classList.add('hidden');
+    stopMicStream();
+  }
+
+  function startVoiceover() {
+    if (vo.phase !== 'setup' || !vo.stream) return;
+    voPrefs.hear = $('#voHear').checked;
+    voPrefs.mic = $('#voMic').value || '';
+    saveVoPrefs();
+    $('#voModal').classList.add('hidden');
+    vo.phase = 'countdown';
+    const ov = $('#recOverlay');
+    ov.classList.remove('hidden', 'recording');
+    let n = 3;
+    $('#recCount').textContent = n;
+    vo.countdown = setInterval(() => {
+      n--;
+      if (n > 0) { $('#recCount').textContent = n; return; }
+      clearInterval(vo.countdown);
+      beginRecording();
+    }, 1000);
+    syncVoButton();
+  }
+  function cancelCountdown() {
+    if (vo.phase !== 'countdown') return;
+    clearInterval(vo.countdown);
+    vo.phase = 'idle';
+    $('#recOverlay').classList.add('hidden');
+    stopMicStream();
+    syncVoButton();
+    toast('Voiceover cancelled');
+  }
+
+  function beginRecording() {
+    const mime = VO_MIME.find(t => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t));
+    let rec;
+    try { rec = new MediaRecorder(vo.stream, mime ? { mimeType: mime } : undefined); }
+    catch (err) { vo.phase = 'idle'; $('#recOverlay').classList.add('hidden'); stopMicStream(); syncVoButton(); toast('Couldn’t start recording: ' + err.message, 5000); return; }
+    vo.rec = rec;
+    vo.chunks = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) vo.chunks.push(e.data); };
+    rec.onstop = finishRecording;
+    rec.onstart = () => {
+      // start the timeline at the same moment as the recorder, so the take lines up with the picture
+      vo.t0 = state.time;
+      vo.wall0 = performance.now();
+      vo.phase = 'recording';
+      $('#recOverlay').classList.add('recording');
+      if (master && !voPrefs.hear) master.gain.value = 0;     // keep the speakers quiet (no echo into the mic)
+      if (projectDuration() > state.time + 0.05) play();
+      syncVoButton();
+      const clock = () => {
+        if (vo.phase !== 'recording') return;
+        $('#recTime').textContent = fmt((performance.now() - vo.wall0) / 1000);
+        requestAnimationFrame(clock);
+      };
+      clock();
+    };
+    rec.start(250);
+  }
+  function stopVoiceover() {
+    if (vo.phase === 'countdown') { cancelCountdown(); return; }
+    if (vo.phase !== 'recording' || !vo.rec) return;
+    vo.phase = 'saving';
+    vo.length = (performance.now() - vo.wall0) / 1000;
+    pause();
+    if (master) master.gain.value = 1;
+    $('#recOverlay').classList.add('hidden');
+    syncVoButton();
+    if (vo.rec.state !== 'inactive') vo.rec.stop();
+  }
+
+  /** 16-bit mono WAV: exact length and perfect seeking everywhere (recorder webm files have neither). */
+  function encodeWav(buf) {
+    const n = buf.length, rate = buf.sampleRate, chs = buf.numberOfChannels;
+    const out = new DataView(new ArrayBuffer(44 + n * 2));
+    const str = (o, t) => { for (let i = 0; i < t.length; i++) out.setUint8(o + i, t.charCodeAt(i)); };
+    str(0, 'RIFF'); out.setUint32(4, 36 + n * 2, true); str(8, 'WAVE');
+    str(12, 'fmt '); out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true);
+    out.setUint32(24, rate, true); out.setUint32(28, rate * 2, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true);
+    str(36, 'data'); out.setUint32(40, n * 2, true);
+    const data = [];
+    for (let c = 0; c < chs; c++) data.push(buf.getChannelData(c));
+    for (let i = 0; i < n; i++) {
+      let v = 0;
+      for (let c = 0; c < chs; c++) v += data[c][i];
+      v = Math.max(-1, Math.min(1, v / chs));
+      out.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+    }
+    return new Blob([out], { type: 'audio/wav' });
+  }
+
+  async function finishRecording() {
+    const rec = vo.rec;
+    vo.rec = null;
+    stopMicStream();
+    try {
+      const blob = new Blob(vo.chunks, { type: rec.mimeType || 'audio/webm' });
+      vo.chunks = [];
+      if (vo.length < 0.3 || !blob.size) { toast('That was too short. Try again 🎙️'); return; }
+      const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+      const audio = await new OAC(1, 1, 48000).decodeAudioData(await blob.arrayBuffer());
+      const taken = new Set([...state.media.values()].map(m => m.name));
+      let k = 1;
+      while (taken.has(`Voiceover ${k}.wav`)) k++;
+      const file = new File([encodeWav(audio)], `Voiceover ${k}.wav`, { type: 'audio/wav' });
+      const [m] = await importFiles([file], { quiet: true });
+      if (!m) return;
+      m.voiceover = true;
+      const c = clipFromMedia(m);
+      c.start = vo.t0;
+      placeClip(c, 'keep');
+      select(c.id);
+      commit();
+      toast(`🎙 Voiceover ${k} added at ${fmt(vo.t0)} (${audio.duration.toFixed(1)}s)`, 3500);
+    } catch (err) {
+      console.warn(err);
+      toast('Couldn’t save the recording: ' + ((err && err.message) || err), 5000);
+    } finally {
+      vo.phase = 'idle';
+      syncVoButton();
+    }
+  }
+
+  function syncVoButton() {
+    const b = $('#voBtn');
+    const live = vo.phase === 'recording' || vo.phase === 'countdown';
+    b.classList.toggle('rec-live', live);
+    b.textContent = live ? '⏹ Stop' : vo.phase === 'saving' ? '⏳ Saving…' : '🎙 Voiceover';
+    b.disabled = vo.phase === 'saving';
+    b.setAttribute('aria-pressed', String(live));
   }
 
   // ------------------------------------------------------------------

@@ -6,7 +6,7 @@
   <title>GhostCut — free video editor</title>
   <meta name="description" content="A free, private, in-browser video editor. No uploads, no watermark, no subscription.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👻</text></svg>">
-  <link rel="stylesheet" href="style.css?v=7">
+  <link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
   <header class="topbar">
@@ -80,6 +80,17 @@
     <section class="preview">
       <div class="stage-wrap" id="stageWrap">
         <canvas id="stage"></canvas>
+        <div class="rec-overlay hidden" id="recOverlay">
+          <div class="rec-countdown">
+            <div class="rec-count" id="recCount">3</div>
+            <p>Get ready… recording starts at the playhead</p>
+            <button type="button" id="recCancel">Cancel</button>
+          </div>
+          <button type="button" class="rec-pill" id="recPill" title="Stop recording (Space)">
+            <span class="rec-dot"></span><b>REC</b><span id="recTime">00:00.00</span>
+            <span class="rec-meter"><i class="vo-level"></i></span><span class="rec-stop">⏹ Stop</span>
+          </button>
+        </div>
       </div>
       <div class="transport">
         <span class="timecode" id="timecode">00:00.00 / 00:00.00</span>
@@ -104,6 +115,7 @@
       <span class="sep"></span>
       <button id="addVTrackBtn" title="Add overlay track">＋ Video track</button>
       <button id="addATrackBtn" title="Add audio track">＋ Audio track</button>
+      <button id="voBtn" title="Record a voiceover from the playhead" aria-pressed="false">🎙 Voiceover</button>
       <span class="spacer"></span>
       <label class="field-inline"><input type="checkbox" id="snapChk" checked> Snap</label>
       <label class="field-inline zoom">🔍 <input type="range" id="zoomRange" min="10" max="400" value="80"></label>
@@ -119,6 +131,23 @@
       </div>
     </div>
   </section>
+
+  <div class="modal hidden" id="voModal" role="dialog" aria-modal="true" aria-labelledby="voTitle">
+    <div class="modal-card vo-card">
+      <h2 id="voTitle">🎙 Record a voiceover</h2>
+      <p class="muted small" id="voWhere"></p>
+      <label class="cap-field"><span class="cap-label">Microphone</span><select id="voMic" aria-label="Microphone"></select></label>
+      <div class="vo-meter" aria-hidden="true"><i class="vo-level"></i></div>
+      <p class="small" id="voStatus"></p>
+      <label class="vo-check"><input type="checkbox" id="voHear">
+        <span>🎧 Hear the video while recording<br><span class="muted small">Use headphones, or your mic records the speakers too</span></span></label>
+      <p class="cap-error hidden" id="voError"></p>
+      <div class="cap-actions">
+        <button type="button" id="voCancel">Cancel</button>
+        <button type="button" class="primary" id="voGo">● Start recording</button>
+      </div>
+    </div>
+  </div>
 
   <div class="modal hidden" id="exportModal">
     <div class="modal-card">
@@ -182,6 +211,6 @@
   <div class="toast-wrap" id="toasts"></div>
   <div id="mediaHolder" aria-hidden="true"></div>
 
-  <script src="app.js?v=7"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>
